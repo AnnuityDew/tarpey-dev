@@ -13,18 +13,18 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pleasejs/0.4.2/Please.min.js" integrity="sha512-XTYPyRh2VppCJQXdjcQrCXVpleLCiMB2PSztUvaeQJvT1mhNxkAKMWH7F2hE1C+yxngS4kchaMM+wkv8HVQ4Ww==" crossorigin="anonymous"></script>
   <title>tarpey's apps{% block title %}{% endblock %}</title>
   {% block description %}{% endblock %}
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="author" content="Mike Tarpey">
   <meta name="msapplication-TileColor" content="#2d89ef">
   <meta name="theme-color" content="#ffffff">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="stylesheet" type="text/css" href="{{ url_for('static', path='/index/css/style.css') }}">
-  {% block style %}{% endblock %}
   <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', path='/index/favicon/apple-touch-icon.png') }}">
   <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', path='/index/favicon/favicon-32x32.png') }}">
   <link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', path='/index/favicon/favicon-16x16.png') }}">
   <link rel="manifest" href="{{ url_for('static', path='/index/favicon/site.webmanifest') }}">
   <link rel="mask-icon" href="{{ url_for('static', path='/index/favicon/safari-pinned-tab.svg') }}" color="#5bbad5">
   <link rel="shortcut icon" href="{{ url_for('static', path='/index/favicon/favicon.ico') }}">
+  <link rel="stylesheet" type="text/css" href="{{ url_for('static', path='/index/css/style.css') }}">
+  {% block style %}{% endblock %}
   {% block java %}{% endblock %}
 </head>
 
