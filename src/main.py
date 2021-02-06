@@ -1,7 +1,8 @@
 # import native Python packages
+import multiprocessing
 
 # import third party packages
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import ORJSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -37,6 +38,12 @@ except ImportError:
     pass
 
 
+def multiproc_context():
+    # possible multiprocessing solution from https://github.com/tiangolo/fastapi/issues/1487
+    # this prevents gunicorn workers from crashing on multiprocessing!
+    multiprocessing.set_start_method('spawn')
+
+
 def create_fastapi_app():
     # create the root and API FastAPI apps
     view_app = FastAPI(
@@ -52,6 +59,7 @@ def create_fastapi_app():
 
     # startup and shutdown connection to DB
     # see https://motor.readthedocs.io/en/stable/tutorial-asyncio.html
+    view_app.add_event_handler('startup', multiproc_context)
     view_app.add_event_handler('startup', motor_startup)
     view_app.add_event_handler('shutdown', motor_shutdown)
 

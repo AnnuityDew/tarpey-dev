@@ -1,11 +1,12 @@
 # import native Python packages
 from datetime import date
 from enum import Enum
+import multiprocessing
 import orjson
 from time import perf_counter
 
 # import third party packages
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Path
 from motor.motor_asyncio import AsyncIOMotorClient
 import numpy as np
 import pandas
@@ -110,11 +111,12 @@ async def get_season_team_players(
         raise HTTPException(status_code=404, detail="No data found!")
 
 
-@ab_api.get("/sim/{season}/{team_one}/{team_two}")
+@ab_api.get("/sim/{season}/{team_one}/{team_two}/{sample_size}")
 async def full_game_simulation(
     season: FantasyDataSeason,
     team_one: str,
     team_two: str,
+    sample_size: int = Path(..., gt=0, le=10),
     client: AsyncIOMotorClient = Depends(get_odm),
 ):
     # performance timer
@@ -136,14 +138,22 @@ async def full_game_simulation(
         [player_season.doc() for player_season in matchup_data]
     )
 
-    # array of results. need to figure out parallel sims
-    results = run_simulation(matchup_df)
+    # create a list of matchup dfs representing multiple simulations
+    if sample_size > 1:
+        cores_to_use = multiprocessing.cpu_count()
+        simulations = [matchup_df.copy() for x in range(sample_size)]
+        
+        with multiprocessing.Pool(processes=cores_to_use) as p:
+            results = p.map(run_simulation, simulations)
+    else:
+        # just do one run
+        results = run_simulation(matchup_df)
 
     end_time = perf_counter()
 
     return {
         "time": (end_time - start_time),
-        "simulations": 1,
+        "simulations": sample_size,
         "results": results,
     }
 

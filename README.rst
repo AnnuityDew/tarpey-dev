@@ -34,6 +34,10 @@ MongoDB with FastAPI
 https://github.com/tiangolo/fastapi/issues/1515
 https://github.com/tiangolo/fastapi/issues/452
 
+multiprocessing
+https://stackoverflow.com/questions/63169865/how-to-do-multiprocessing-in-fastapi
+https://github.com/tiangolo/fastapi/issues/1487#issuecomment-657290725
+
 There's so much that can go wrong when you're building one of these things.
 
 * One wrong / can lead to a redirect that costs you your cookies. =[
