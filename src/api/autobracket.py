@@ -1,27 +1,21 @@
 # import native Python packages
 from datetime import date
-from enum import Enum, IntEnum
-from itertools import permutations, product
-import multiprocessing
+from enum import Enum
 import orjson
 from time import perf_counter
-from typing import List, Dict, Optional
 
 # import third party packages
 from fastapi import APIRouter, HTTPException, Depends
 from motor.motor_asyncio import AsyncIOMotorClient
 import numpy as np
 import pandas
-from pandas import StringDtype
-import plotly
-import plotly.express as px
-from odmantic import AIOEngine, Field, Model, ObjectId
+from odmantic import AIOEngine, Field, Model
 import requests
 
 # import custom local stuff
 from instance.config import FANTASY_DATA_KEY_FREE
 from src.db.atlas import get_odm
-from src.api.users import oauth2_scheme, UserOut
+from src.api.users import oauth2_scheme
 
 
 ab_api = APIRouter(
@@ -142,28 +136,25 @@ async def full_game_simulation(
         [player_season.doc() for player_season in matchup_data]
     )
 
-    # number of simulations to run
-    num_simulations = 7
-
-    # array of simulations (Monte Carlo!)
-    simulations = [matchup_df.copy() for x in range(num_simulations)]
-
-    # array of results, which can run in parallel
-    with multiprocessing.Pool() as p:
-        results = p.map(run_simulation, simulations)
+    # array of results. need to figure out parallel sims
+    results = run_simulation(matchup_df)
 
     end_time = perf_counter()
 
     return {
-        'time': (end_time - start_time),
-        'simulations': num_simulations,
-        'results': results,
+        "time": (end_time - start_time),
+        "simulations": 1,
+        "results": results,
     }
 
 
 def run_simulation(matchup_df):
-    # assign columns for the simulated game stats
+    # assign columns for shot distributions and simulated game stats
     matchup_df = matchup_df.assign(
+        two_attempt_chance=lambda x: x.TwoPointersAttempted / x.FieldGoalsAttempted,
+        two_chance=lambda x: x.TwoPointersMade / x.TwoPointersAttempted,
+        three_chance=lambda x: x.ThreePointersMade / x.ThreePointersAttempted,
+        ft_chance=lambda x: x.FreeThrowsMade / x.FreeThrowsAttempted,
         sim_seconds=0,
         sim_two_pointers_made=0,
         sim_two_pointers_attempted=0,
@@ -226,7 +217,10 @@ def run_simulation(matchup_df):
             )
             # aggregate team box score
             team_score_df = matchup_df.groupby(level=0).agg({"sim_points": "sum"})
-            if team_score_df.loc[offensive_team][0] == team_score_df.loc[defensive_team][0]:
+            if (
+                team_score_df.loc[offensive_team][0]
+                == team_score_df.loc[defensive_team][0]
+            ):
                 # start a 5 minute overtime!
                 time_remaining = 60 * 5
                 continue
@@ -272,46 +266,12 @@ def run_simulation(matchup_df):
         # converts steals per both teams' possession to steals per defensive possession (since
         # you can't get a steal while you're on offense!)
         # i think this is where we would put a tempo factor...
-        steal_probs = (
-            on_floor_df.groupby(level=[0, 1])
-            .agg(
-                {
-                    "Steals": "sum",
-                    "Minutes": "sum",
-                    "sim_steals": "sum",
-                }
-            )
-            .loc[[defensive_team]]
-        )
-        steal_probs["steal_chance_pdf"] = (
-            steal_probs["Steals"] / steal_probs["Minutes"] / 60 * possession_length * 2
-        )
-        steal_probs["steal_chance_cdf"] = steal_probs.groupby(level=0).cumsum()[
-            "steal_chance_pdf"
-        ]
+        steal_probs = steal_distribution(possession_length, defensive_team, on_floor_df)
 
         # we also need turnover probabilities here
-        turnover_probs = (
-            on_floor_df.groupby(level=[0, 1])
-            .agg(
-                {
-                    "Turnovers": "sum",
-                    "Minutes": "sum",
-                    "sim_turnovers": "sum",
-                }
-            )
-            .loc[[offensive_team]]
+        turnover_probs = turnover_distribution(
+            possession_length, offensive_team, on_floor_df
         )
-        turnover_probs["turnover_chance_pdf"] = (
-            turnover_probs["Turnovers"]
-            / turnover_probs["Minutes"]
-            / 60
-            * possession_length
-            * 2
-        )
-        turnover_probs["turnover_chance_cdf"] = turnover_probs.groupby(
-            level=0
-        ).cumsum()["turnover_chance_pdf"]
 
         # the steal/turnover check! we're modeling them as independent.
         # (right now it's possible that a turnover in a given possession
@@ -354,67 +314,12 @@ def run_simulation(matchup_df):
         # time to model shot attempts. if there's no steal or turnover,
         # a shot is the only other outcome, so we can simply model who's
         # gonna take it and what kind of shot it will be.
-        shot_probs = (
-            on_floor_df.groupby(level=[0, 1])
-            .agg(
-                {
-                    "TwoPointersAttempted": "sum",
-                    "TwoPointersMade": "sum",
-                    "ThreePointersAttempted": "sum",
-                    "ThreePointersMade": "sum",
-                    "FieldGoalsAttempted": "sum",
-                    "FieldGoalsMade": "sum",
-                    "FreeThrowsAttempted": "sum",
-                    "FreeThrowsMade": "sum",
-                    "sim_two_pointers_made": "sum",
-                    "sim_two_pointers_attempted": "sum",
-                    "sim_three_pointers_made": "sum",
-                    "sim_three_pointers_attempted": "sum",
-                    "sim_free_throws_made": "sum",
-                    "sim_free_throws_attempted": "sum",
-                }
-            )
-            .loc[[offensive_team]]
-        )
-        team_shot_prob = shot_probs.groupby(level=0).sum()
-        shot_share = shot_probs.div(team_shot_prob, level="Team")
-        shot_probs["field_goal_pdf"] = shot_share["FieldGoalsAttempted"]
-
-        # identify the shooter
-        shooting_player = shot_probs.sample(n=1, weights=shot_probs.field_goal_pdf)
-
-        # determine 2pt attempt or 3pt attempt, two chance, three chance, free throw chance
-        shooting_player = shooting_player.assign(
-            two_attempt_chance=lambda x: x.TwoPointersAttempted / x.FieldGoalsAttempted,
-            two_chance=lambda x: x.TwoPointersMade / x.TwoPointersAttempted,
-            three_chance=lambda x: x.ThreePointersMade / x.ThreePointersAttempted,
-            ft_chance=lambda x: x.FreeThrowsMade / x.FreeThrowsAttempted,
-        )
+        shooting_player = identify_shooter(offensive_team, on_floor_df)
 
         # if a defensive player blocks, 50/50 chance to be a turnover.
         # using blocks per second over the season.
         # we're either crediting miss+block, or miss+block+rebound.
-        block_probs = (
-            on_floor_df.groupby(level=[0, 1])
-            .agg(
-                {
-                    "BlockedShots": "sum",
-                    "Minutes": "sum",
-                    "sim_blocks": "sum",
-                }
-            )
-            .loc[[defensive_team]]
-        )
-        block_probs["block_chance_pdf"] = (
-            block_probs["BlockedShots"]
-            / block_probs["Minutes"]
-            / 60
-            * possession_length
-            * 2
-        )
-        block_probs["block_chance_cdf"] = block_probs.groupby(level=0).cumsum()[
-            "block_chance_pdf"
-        ]
+        block_probs = block_distribution(possession_length, defensive_team, on_floor_df)
 
         # block check!
         block_success = rng.random()
@@ -456,25 +361,14 @@ def run_simulation(matchup_df):
                 (
                     offensive_rebound_probs,
                     defensive_rebound_probs,
-                    team_off_reb_total,
-                    team_def_reb_total,
-                    rebound_denominator,
-                ) = rebound_logic(offensive_team, defensive_team, on_floor_df)
+                    off_reb_chance,
+                ) = rebound_distribution(offensive_team, defensive_team, on_floor_df)
 
                 # rebound type check!
                 off_reb_success = rng.random()
-                off_reb_chance = (
-                    team_off_reb_total["OffensiveRebounds"][0] / rebound_denominator
-                )
 
                 if off_reb_success < off_reb_chance:
                     # who got the rebound?
-                    off_reb_share = offensive_rebound_probs.div(
-                        team_off_reb_total, level="Team"
-                    )
-                    offensive_rebound_probs["off_reb_pdf"] = off_reb_share[
-                        "OffensiveRebounds"
-                    ]
                     rebounding_player = offensive_rebound_probs.sample(
                         n=1, weights=offensive_rebound_probs.off_reb_pdf
                     )
@@ -489,12 +383,6 @@ def run_simulation(matchup_df):
                     continue
                 else:
                     # who got the rebound?
-                    def_reb_share = defensive_rebound_probs.div(
-                        team_def_reb_total, level="Team"
-                    )
-                    defensive_rebound_probs["def_reb_pdf"] = def_reb_share[
-                        "DefensiveRebounds"
-                    ]
                     rebounding_player = defensive_rebound_probs.sample(
                         n=1, weights=defensive_rebound_probs.def_reb_pdf
                     )
@@ -510,31 +398,7 @@ def run_simulation(matchup_df):
 
         # if we've made it this far, the shot was not blocked.
         # but did it go in? and was there a foul?
-        foul_probs = (
-            on_floor_df.groupby(level=[0, 1])
-            .agg(
-                {
-                    "PersonalFouls": "sum",
-                    "Minutes": "sum",
-                    "sim_fouls": "sum",
-                }
-            )
-            .loc[[defensive_team]]
-        )
-
-        # the x2 factor is still here for fouls, even though you can foul on offense or defense.
-        # but for now this model is assuming you can only foul on defense. we would scrap
-        # this factor once we're modeling offensive fouls independently
-        foul_probs["foul_chance_pdf"] = (
-            foul_probs["PersonalFouls"]
-            / foul_probs["Minutes"]
-            / 60
-            * possession_length
-            * 2
-        )
-        foul_probs["foul_chance_cdf"] = foul_probs.groupby(level=0).cumsum()[
-            "foul_chance_pdf"
-        ]
+        foul_probs = foul_distribution(possession_length, defensive_team, on_floor_df)
 
         # defensive foul check! (potential improvement, offensive fouls and
         # non-shooting fouls)
@@ -575,27 +439,9 @@ def run_simulation(matchup_df):
                 matchup_df.update(shooting_player)
 
                 # assist logic after a made shot. who assisted it if anyone?
-                assist_probs = (
-                    on_floor_df.groupby(level=[0, 1])
-                    .agg(
-                        {
-                            "Assists": "sum",
-                            "Minutes": "sum",
-                            "sim_assists": "sum",
-                        }
-                    )
-                    .loc[[offensive_team]]
+                assist_probs = assist_distribution(
+                    possession_length, offensive_team, on_floor_df
                 )
-                assist_probs["assist_chance_pdf"] = (
-                    assist_probs["Assists"]
-                    / assist_probs["Minutes"]
-                    / 60
-                    * possession_length
-                    * 2
-                )
-                assist_probs["assist_chance_cdf"] = assist_probs.groupby(
-                    level=0
-                ).cumsum()["assist_chance_pdf"]
 
                 # assist check!
                 assist_success = rng.random()
@@ -650,26 +496,16 @@ def run_simulation(matchup_df):
                         (
                             offensive_rebound_probs,
                             defensive_rebound_probs,
-                            team_off_reb_total,
-                            team_def_reb_total,
-                            rebound_denominator,
-                        ) = rebound_logic(offensive_team, defensive_team, on_floor_df)
+                            off_reb_chance,
+                        ) = rebound_distribution(
+                            offensive_team, defensive_team, on_floor_df
+                        )
 
                         # rebound type check!
                         off_reb_success = rng.random()
-                        off_reb_chance = (
-                            team_off_reb_total["OffensiveRebounds"][0]
-                            / rebound_denominator
-                        )
 
                         if off_reb_success < off_reb_chance:
                             # who got the rebound?
-                            off_reb_share = offensive_rebound_probs.div(
-                                team_off_reb_total, level="Team"
-                            )
-                            offensive_rebound_probs["off_reb_pdf"] = off_reb_share[
-                                "OffensiveRebounds"
-                            ]
                             rebounding_player = offensive_rebound_probs.sample(
                                 n=1, weights=offensive_rebound_probs.off_reb_pdf
                             )
@@ -684,12 +520,6 @@ def run_simulation(matchup_df):
                             continue
                         else:
                             # who got the rebound?
-                            def_reb_share = defensive_rebound_probs.div(
-                                team_def_reb_total, level="Team"
-                            )
-                            defensive_rebound_probs["def_reb_pdf"] = def_reb_share[
-                                "DefensiveRebounds"
-                            ]
                             rebounding_player = defensive_rebound_probs.sample(
                                 n=1, weights=defensive_rebound_probs.def_reb_pdf
                             )
@@ -712,25 +542,16 @@ def run_simulation(matchup_df):
                     (
                         offensive_rebound_probs,
                         defensive_rebound_probs,
-                        team_off_reb_total,
-                        team_def_reb_total,
-                        rebound_denominator,
-                    ) = rebound_logic(offensive_team, defensive_team, on_floor_df)
+                        off_reb_chance,
+                    ) = rebound_distribution(
+                        offensive_team, defensive_team, on_floor_df
+                    )
 
                     # rebound type check!
                     off_reb_success = rng.random()
-                    off_reb_chance = (
-                        team_off_reb_total["OffensiveRebounds"][0] / rebound_denominator
-                    )
 
                     if off_reb_success < off_reb_chance:
                         # who got the rebound?
-                        off_reb_share = offensive_rebound_probs.div(
-                            team_off_reb_total, level="Team"
-                        )
-                        offensive_rebound_probs["off_reb_pdf"] = off_reb_share[
-                            "OffensiveRebounds"
-                        ]
                         rebounding_player = offensive_rebound_probs.sample(
                             n=1, weights=offensive_rebound_probs.off_reb_pdf
                         )
@@ -745,12 +566,6 @@ def run_simulation(matchup_df):
                         continue
                     else:
                         # who got the rebound?
-                        def_reb_share = defensive_rebound_probs.div(
-                            team_def_reb_total, level="Team"
-                        )
-                        defensive_rebound_probs["def_reb_pdf"] = def_reb_share[
-                            "DefensiveRebounds"
-                        ]
                         rebounding_player = defensive_rebound_probs.sample(
                             n=1, weights=defensive_rebound_probs.def_reb_pdf
                         )
@@ -798,27 +613,9 @@ def run_simulation(matchup_df):
                 matchup_df.update(shooting_player)
 
                 # assist logic after a made shot. who assisted it if anyone?
-                assist_probs = (
-                    on_floor_df.groupby(level=[0, 1])
-                    .agg(
-                        {
-                            "Assists": "sum",
-                            "Minutes": "sum",
-                            "sim_assists": "sum",
-                        }
-                    )
-                    .loc[[offensive_team]]
+                assist_probs = assist_distribution(
+                    possession_length, offensive_team, on_floor_df
                 )
-                assist_probs["assist_chance_pdf"] = (
-                    assist_probs["Assists"]
-                    / assist_probs["Minutes"]
-                    / 60
-                    * possession_length
-                    * 2
-                )
-                assist_probs["assist_chance_cdf"] = assist_probs.groupby(
-                    level=0
-                ).cumsum()["assist_chance_pdf"]
 
                 # assist check!
                 assist_success = rng.random()
@@ -873,26 +670,16 @@ def run_simulation(matchup_df):
                         (
                             offensive_rebound_probs,
                             defensive_rebound_probs,
-                            team_off_reb_total,
-                            team_def_reb_total,
-                            rebound_denominator,
-                        ) = rebound_logic(offensive_team, defensive_team, on_floor_df)
+                            off_reb_chance,
+                        ) = rebound_distribution(
+                            offensive_team, defensive_team, on_floor_df
+                        )
 
                         # rebound type check!
                         off_reb_success = rng.random()
-                        off_reb_chance = (
-                            team_off_reb_total["OffensiveRebounds"][0]
-                            / rebound_denominator
-                        )
 
                         if off_reb_success < off_reb_chance:
                             # who got the rebound?
-                            off_reb_share = offensive_rebound_probs.div(
-                                team_off_reb_total, level="Team"
-                            )
-                            offensive_rebound_probs["off_reb_pdf"] = off_reb_share[
-                                "OffensiveRebounds"
-                            ]
                             rebounding_player = offensive_rebound_probs.sample(
                                 n=1, weights=offensive_rebound_probs.off_reb_pdf
                             )
@@ -907,12 +694,6 @@ def run_simulation(matchup_df):
                             continue
                         else:
                             # who got the rebound?
-                            def_reb_share = defensive_rebound_probs.div(
-                                team_def_reb_total, level="Team"
-                            )
-                            defensive_rebound_probs["def_reb_pdf"] = def_reb_share[
-                                "DefensiveRebounds"
-                            ]
                             rebounding_player = defensive_rebound_probs.sample(
                                 n=1, weights=defensive_rebound_probs.def_reb_pdf
                             )
@@ -935,25 +716,16 @@ def run_simulation(matchup_df):
                     (
                         offensive_rebound_probs,
                         defensive_rebound_probs,
-                        team_off_reb_total,
-                        team_def_reb_total,
-                        rebound_denominator,
-                    ) = rebound_logic(offensive_team, defensive_team, on_floor_df)
+                        off_reb_chance,
+                    ) = rebound_distribution(
+                        offensive_team, defensive_team, on_floor_df
+                    )
 
                     # rebound type check!
                     off_reb_success = rng.random()
-                    off_reb_chance = (
-                        team_off_reb_total["OffensiveRebounds"][0] / rebound_denominator
-                    )
 
                     if off_reb_success < off_reb_chance:
                         # who got the rebound?
-                        off_reb_share = offensive_rebound_probs.div(
-                            team_off_reb_total, level="Team"
-                        )
-                        offensive_rebound_probs["off_reb_pdf"] = off_reb_share[
-                            "OffensiveRebounds"
-                        ]
                         rebounding_player = offensive_rebound_probs.sample(
                             n=1, weights=offensive_rebound_probs.off_reb_pdf
                         )
@@ -968,12 +740,6 @@ def run_simulation(matchup_df):
                         continue
                     else:
                         # who got the rebound?
-                        def_reb_share = defensive_rebound_probs.div(
-                            team_def_reb_total, level="Team"
-                        )
-                        defensive_rebound_probs["def_reb_pdf"] = def_reb_share[
-                            "DefensiveRebounds"
-                        ]
                         rebounding_player = defensive_rebound_probs.sample(
                             n=1, weights=defensive_rebound_probs.def_reb_pdf
                         )
@@ -1023,39 +789,151 @@ def run_simulation(matchup_df):
     return [team_box_score_json, box_score_json]
 
 
-def rebound_logic(offensive_team, defensive_team, on_floor_df):
-    offensive_rebound_probs = (
-        on_floor_df.groupby(["Team", "PlayerID"])
-        .agg(
-            {
-                "OffensiveRebounds": "sum",
-                "sim_offensive_rebounds": "sum",
-            }
-        )
-        .loc[[offensive_team]]
+def assist_distribution(possession_length, offensive_team, on_floor_df):
+    assist_fields = [
+        "Assists",
+        "Minutes",
+        "sim_assists",
+    ]
+    assist_probs = on_floor_df.loc[[offensive_team], assist_fields]
+    assist_probs["assist_chance_pdf"] = (
+        assist_probs["Assists"] / assist_probs["Minutes"] / 60 * possession_length * 2
     )
-    defensive_rebound_probs = (
-        on_floor_df.groupby(["Team", "PlayerID"])
-        .agg(
-            {
-                "DefensiveRebounds": "sum",
-                "sim_defensive_rebounds": "sum",
-            }
-        )
-        .loc[[defensive_team]]
+    assist_probs["assist_chance_cdf"] = assist_probs.groupby(level=0).cumsum()[
+        "assist_chance_pdf"
+    ]
+    return assist_probs
+
+
+def foul_distribution(possession_length, defensive_team, on_floor_df):
+    foul_fields = [
+        "PersonalFouls",
+        "Minutes",
+        "sim_fouls",
+    ]
+    foul_probs = on_floor_df.loc[[defensive_team], foul_fields]
+
+    # the x2 factor is still here for fouls, even though you can foul on offense or defense.
+    # but for now this model is assuming you can only foul on defense. we would scrap
+    # this factor once we're modeling offensive fouls independently
+    foul_probs["foul_chance_pdf"] = (
+        foul_probs["PersonalFouls"] / foul_probs["Minutes"] / 60 * possession_length * 2
     )
+    foul_probs["foul_chance_cdf"] = foul_probs.groupby(level=0).cumsum()[
+        "foul_chance_pdf"
+    ]
+    return foul_probs
+
+
+def block_distribution(possession_length, defensive_team, on_floor_df):
+    block_fields = ["BlockedShots", "Minutes", "sim_blocks"]
+    block_probs = on_floor_df.loc[[defensive_team], block_fields]
+    block_probs["block_chance_pdf"] = (
+        block_probs["BlockedShots"]
+        / block_probs["Minutes"]
+        / 60
+        * possession_length
+        * 2
+    )
+    block_probs["block_chance_cdf"] = block_probs.groupby(level=0).cumsum()[
+        "block_chance_pdf"
+    ]
+    return block_probs
+
+
+def identify_shooter(offensive_team, on_floor_df):
+    shot_fields = [
+        "two_attempt_chance",
+        "two_chance",
+        "three_chance",
+        "ft_chance",
+        "TwoPointersAttempted",
+        "TwoPointersMade",
+        "ThreePointersAttempted",
+        "ThreePointersMade",
+        "FieldGoalsAttempted",
+        "FieldGoalsMade",
+        "FreeThrowsAttempted",
+        "FreeThrowsMade",
+        "sim_two_pointers_made",
+        "sim_two_pointers_attempted",
+        "sim_three_pointers_made",
+        "sim_three_pointers_attempted",
+        "sim_free_throws_made",
+        "sim_free_throws_attempted",
+    ]
+    shot_probs = on_floor_df.loc[[offensive_team], shot_fields]
+    team_shot_prob = shot_probs.groupby(level=0).sum()
+    shot_share = shot_probs.div(team_shot_prob, level="Team")
+    shot_probs["field_goal_pdf"] = shot_share["FieldGoalsAttempted"]
+
+    # identify the shooter
+    shooting_player = shot_probs.sample(n=1, weights=shot_probs.field_goal_pdf)
+
+    return shooting_player
+
+
+def steal_distribution(possession_length, defensive_team, on_floor_df):
+    steal_fields = [
+        "Steals",
+        "Minutes",
+        "sim_steals",
+    ]
+    steal_probs = on_floor_df.loc[[defensive_team], steal_fields]
+    steal_probs["steal_chance_pdf"] = (
+        steal_probs["Steals"] / steal_probs["Minutes"] / 60 * possession_length * 2
+    )
+    steal_probs["steal_chance_cdf"] = steal_probs.groupby(level=0).cumsum()[
+        "steal_chance_pdf"
+    ]
+    return steal_probs
+
+
+def turnover_distribution(possession_length, offensive_team, on_floor_df):
+    turnover_fields = [
+        "Turnovers",
+        "Minutes",
+        "sim_turnovers",
+    ]
+    turnover_probs = on_floor_df.loc[[offensive_team], turnover_fields]
+    turnover_probs["turnover_chance_pdf"] = (
+        turnover_probs["Turnovers"]
+        / turnover_probs["Minutes"]
+        / 60
+        * possession_length
+        * 2
+    )
+    turnover_probs["turnover_chance_cdf"] = turnover_probs.groupby(level=0).cumsum()[
+        "turnover_chance_pdf"
+    ]
+    return turnover_probs
+
+
+def rebound_distribution(offensive_team, defensive_team, on_floor_df):
+    off_reb_fields = ["OffensiveRebounds", "sim_offensive_rebounds"]
+    def_reb_fields = ["DefensiveRebounds", "sim_defensive_rebounds"]
+
+    offensive_rebound_probs = on_floor_df.loc[[offensive_team], off_reb_fields]
+    defensive_rebound_probs = on_floor_df.loc[[defensive_team], def_reb_fields]
+
     team_off_reb_total = offensive_rebound_probs.groupby(level=0).sum()
     team_def_reb_total = defensive_rebound_probs.groupby(level=0).sum()
     rebound_denominator = (
         team_off_reb_total["OffensiveRebounds"][0]
         + team_def_reb_total["DefensiveRebounds"][0]
     )
+
+    off_reb_share = offensive_rebound_probs.div(team_off_reb_total, level="Team")
+    offensive_rebound_probs["off_reb_pdf"] = off_reb_share["OffensiveRebounds"]
+    def_reb_share = defensive_rebound_probs.div(team_def_reb_total, level="Team")
+    defensive_rebound_probs["def_reb_pdf"] = def_reb_share["DefensiveRebounds"]
+
+    off_reb_chance = team_off_reb_total["OffensiveRebounds"][0] / rebound_denominator
+
     return (
         offensive_rebound_probs,
         defensive_rebound_probs,
-        team_off_reb_total,
-        team_def_reb_total,
-        rebound_denominator,
+        off_reb_chance,
     )
 
 
