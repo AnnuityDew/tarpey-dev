@@ -6,7 +6,7 @@ WORKDIR ${APP_HOME}
 COPY requirements.txt ./
 RUN pip install --trusted-host pypi.python.org -r requirements.txt
 COPY . ./
-CMD exec gunicorn --bind :$PORT --workers 1 --worker-class uvicorn.workers.UvicornWorker --threads 8 src.main:app
+CMD exec gunicorn --config src.gunicorn_config --bind :$PORT src.main:app
 
 # need to add code for FastAPI generic
 # insert code here
