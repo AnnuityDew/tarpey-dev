@@ -37,6 +37,9 @@ https://github.com/tiangolo/fastapi/issues/452
 multiprocessing
 https://stackoverflow.com/questions/63169865/how-to-do-multiprocessing-in-fastapi
 https://github.com/tiangolo/fastapi/issues/1487#issuecomment-657290725
+https://www.cloudcity.io/blog/2019/02/27/things-i-wish-they-told-me-about-multiprocessing-in-python/
+https://stackoverflow.com/questions/20387510/proper-way-to-use-multiprocessor-pool-in-a-nested-loop
+https://stackoverflow.com/questions/38271547/when-should-we-call-multiprocessing-pool-join
 
 There's so much that can go wrong when you're building one of these things.
 
