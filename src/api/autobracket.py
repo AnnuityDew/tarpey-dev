@@ -12,6 +12,8 @@ import numpy as np
 import pandas
 from odmantic import AIOEngine, Field, Model
 import requests
+from scipy import stats
+from sklearn.cluster import KMeans
 
 # import custom local stuff
 from instance.config import FANTASY_DATA_KEY_FREE
@@ -109,6 +111,88 @@ async def get_season_team_players(
         return data
     else:
         raise HTTPException(status_code=404, detail="No data found!")
+
+
+@ab_api.get("/sim/{season}/kmeans")
+async def k_means_players(
+    season: FantasyDataSeason,
+    client: AsyncIOMotorClient = Depends(get_odm),
+):
+
+    engine = AIOEngine(motor_client=client, database="autobracket")
+    player_data = [
+        player_season
+        async for player_season in engine.find(
+            PlayerSeason,
+            (PlayerSeason.Season == season),
+            sort=(PlayerSeason.Team, PlayerSeason.StatID),
+        )
+    ]
+
+    player_df = pandas.DataFrame(
+        [player_season.doc() for player_season in player_data]
+    ).set_index(
+        ["Team", "PlayerID"]
+    )
+
+    # calculate potential columns for clustering, drop others
+    player_df["two_attempt_rate"] = player_df["TwoPointersAttempted"] / player_df["FieldGoalsAttempted"]
+    player_df["two_success_rate"] = player_df["TwoPointersMade"] / player_df["TwoPointersAttempted"]
+    player_df["three_success_rate"] = player_df["ThreePointersMade"] / player_df["ThreePointersAttempted"]
+    player_df["ft_success_rate"] = player_df["FreeThrowsMade"] / player_df["FreeThrowsAttempted"]
+
+    player_df["points_per_second"] = player_df["Points"] / player_df["Minutes"] / 60
+    player_df["shots_per_second"] = player_df["FieldGoalsAttempted"] / player_df["Minutes"] / 60
+    player_df["rebounds_per_second"] = player_df["Rebounds"] / player_df["Minutes"] / 60
+    player_df["assists_per_second"] = player_df["Assists"] / player_df["Minutes"] / 60
+    player_df["steals_per_second"] = player_df["Steals"] / player_df["Minutes"] / 60
+    player_df["blocks_per_second"] = player_df["BlockedShots"] / player_df["Minutes"] / 60
+    player_df["turnovers_per_second"] = player_df["Turnovers"] / player_df["Minutes"] / 60
+    player_df["fouls_per_second"] = player_df["PersonalFouls"] / player_df["Minutes"] / 60
+
+    # drop anyone that didn't play a minute or has null values (could be took no shots etc.)
+    player_df = player_df.loc[player_df["Minutes"] > 0].dropna()
+
+    # work in progress, but these will be the columns to start with
+    player_df = player_df[[
+        "two_attempt_rate",
+        "two_success_rate",
+        "three_success_rate",
+        "ft_success_rate",
+        # "points_per_second",
+        # "shots_per_second",
+        # "rebounds_per_second",
+        # "assists_per_second",
+        # "steals_per_second",
+        # "blocks_per_second",
+        # "turnovers_per_second",
+        # "fouls_per_second",
+    ]]
+
+    # columns for the scatter plot (do this before adding labels to the data)
+    scatter_cols = player_df.columns.tolist()
+
+    # K-Means time! 10 pretty much looks like where the elbow tapers off,
+    # when looking at the four "rate" variables.
+    model = KMeans(n_clusters=10)
+    model.fit(player_df)
+    player_df["player_type"] = model.predict(player_df)
+
+    # for now just display 1/10th of the data
+    player_df = player_df.sample(
+        frac=0.1, replace=False,
+    )
+
+    # remove outliers (these are probably folks with very few minutes anyway)
+    player_df = player_df.loc[(np.abs(stats.zscore(player_df)) < 3).all(axis=1)]
+
+    scatter_data = orjson.loads(player_df.to_json(orient="records"))
+    
+    return {
+        'data': scatter_data,
+        'columns': scatter_cols,
+        'inertia': model.inertia_
+    }
 
 
 @ab_api.get("/sim/{season}/{team_one}/{team_two}/{sample_size}")
