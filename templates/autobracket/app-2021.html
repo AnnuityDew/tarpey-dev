@@ -8,22 +8,27 @@ This is the 2021 version...currently under construction!">
 {% block title %} - autobracket{% endblock %}
 
 {% block style %}
+<!-- Shoelace needs to come before our CSS, otherwise we can't overwrite! -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.0.0-beta.27/dist/shoelace/shoelace.css">
+<script type="module" src="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.0.0-beta.27/dist/shoelace/shoelace.esm.js"></script>
 <link rel="stylesheet" type="text/css" href="{{ url_for('static', path='/autobracket/css/autobracket.css') }}">
 {% endblock %}
 
 {% block java %}
-<script src="https://unpkg.com/react@16/umd/react.production.min.js" crossorigin></script>
-<script src="https://unpkg.com/react-dom@16/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
 <script src="https://d3js.org/d3.v6.min.js"></script>
 <script src="https://d3js.org/d3-axis.v2.min.js"></script>
 {% endblock %}
 
-{% block header %}autobracket output{% endblock %}
+{% block header %}autobracket 2021{% endblock %}
 
 {% block content %}
-<div class="container">
-    <div id="root"></div>
+<p>
+    This page is under construction! But feel free to click through what I've got so far...
+</p>
+<sl-button id="back-button" class="left pnav-button" size="large"><= Back</sl-button>
+<sl-button id="next-button" class="right pnav-button" size="large">Next =></sl-button>
+<div id="analysis" class="svg-container">
 </div>
 <script src="{{ url_for('static', path='/autobracket/js/app-2021.js') }}"></script>
 {% endblock %}

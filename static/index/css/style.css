@@ -158,17 +158,9 @@ input[type=radio] {
   display: inline;
 }
 
-button {
-  font-size: 100%;
-  background-color: #FFFFFF;
-  transition-duration: 0s;
-}
-
 select {
   font-size: 100%;
 }
-
-button:hover {background-color: #99e6ff;}
 
 /* table elements, like in haveyouseenx */
 table {

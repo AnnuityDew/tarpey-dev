@@ -14,6 +14,7 @@
   float: left;
   width: 35%;
 }
+
 /* specific elements of /autobracket/bracket*/
 .modeloutput {
   font-family:"Lato",sans-serif;
@@ -25,4 +26,53 @@
   font-family:"Lato",sans-serif;
   background-color: #000000;
   color: #ffe066;
+}
+
+.svg-container {
+  display: inline-block;
+  position: relative;
+  width: 100%;
+  padding-bottom: 100%;
+  vertical-align: top;
+  overflow: hidden;
+}
+
+#current-chart {
+  display: inline-block;
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.left {
+  float: left;
+}
+.right {
+  float: right;
+}
+
+/* shoelace */
+:root {
+  --sl-font-sans: "Lato",sans-serif;
+  --sl-button-font-size-large: 24px;
+}
+
+.pnav-button::part(base) {
+  background: #444444;
+}
+
+.pnav-button::part(base):hover {
+  background: rgba(68, 68, 68, .1);
+}
+
+.pnav-button::part(base):active {
+  background: rgba(68, 68, 68, .1);
+}
+
+.pnav-button::part(base):focus {
+  box-shadow: 0 0 0 3px rgba(68, 68, 68, .33);
+}
+
+.pnav-button::part(label) {
+  color: #FFFFFF;
 }

@@ -14,6 +14,7 @@ from odmantic import AIOEngine, Field, Model
 import requests
 from scipy import stats
 from sklearn.cluster import KMeans
+from sklearn.preprocessing import MinMaxScaler
 
 # import custom local stuff
 from instance.config import FANTASY_DATA_KEY_FREE
@@ -24,7 +25,6 @@ from src.api.users import oauth2_scheme
 ab_api = APIRouter(
     prefix="/autobracket",
     tags=["autobracket"],
-    dependencies=[Depends(oauth2_scheme)],
 )
 
 
@@ -70,7 +70,7 @@ class PlayerSeason(Model):
     FantasyPointsDraftKings: float
 
 
-@ab_api.get("/stats/{season}/all")
+@ab_api.get("/stats/{season}/all", dependencies=[Depends(oauth2_scheme)])
 async def get_season_players(
     season: FantasyDataSeason,
     client: AsyncIOMotorClient = Depends(get_odm),
@@ -91,7 +91,7 @@ async def get_season_players(
         raise HTTPException(status_code=404, detail="No data found!")
 
 
-@ab_api.get("/stats/{season}/{team}")
+@ab_api.get("/stats/{season}/{team}", dependencies=[Depends(oauth2_scheme)])
 async def get_season_team_players(
     season: FantasyDataSeason,
     team: str,
@@ -131,43 +131,62 @@ async def k_means_players(
 
     player_df = pandas.DataFrame(
         [player_season.doc() for player_season in player_data]
-    ).set_index(
-        ["Team", "PlayerID"]
-    )
+    ).set_index(["Team", "PlayerID"])
 
     # calculate potential columns for clustering, drop others
-    player_df["two_attempt_rate"] = player_df["TwoPointersAttempted"] / player_df["FieldGoalsAttempted"]
-    player_df["two_success_rate"] = player_df["TwoPointersMade"] / player_df["TwoPointersAttempted"]
-    player_df["three_success_rate"] = player_df["ThreePointersMade"] / player_df["ThreePointersAttempted"]
-    player_df["ft_success_rate"] = player_df["FreeThrowsMade"] / player_df["FreeThrowsAttempted"]
+    player_df["two_attempt_rate"] = (
+        player_df["TwoPointersAttempted"] / player_df["FieldGoalsAttempted"]
+    )
+    player_df["two_success_rate"] = (
+        player_df["TwoPointersMade"] / player_df["TwoPointersAttempted"]
+    )
+    player_df["three_success_rate"] = (
+        player_df["ThreePointersMade"] / player_df["ThreePointersAttempted"]
+    )
+    player_df["ft_success_rate"] = (
+        player_df["FreeThrowsMade"] / player_df["FreeThrowsAttempted"]
+    )
 
     player_df["points_per_second"] = player_df["Points"] / player_df["Minutes"] / 60
-    player_df["shots_per_second"] = player_df["FieldGoalsAttempted"] / player_df["Minutes"] / 60
+    player_df["shots_per_second"] = (
+        player_df["FieldGoalsAttempted"] / player_df["Minutes"] / 60
+    )
     player_df["rebounds_per_second"] = player_df["Rebounds"] / player_df["Minutes"] / 60
     player_df["assists_per_second"] = player_df["Assists"] / player_df["Minutes"] / 60
     player_df["steals_per_second"] = player_df["Steals"] / player_df["Minutes"] / 60
-    player_df["blocks_per_second"] = player_df["BlockedShots"] / player_df["Minutes"] / 60
-    player_df["turnovers_per_second"] = player_df["Turnovers"] / player_df["Minutes"] / 60
-    player_df["fouls_per_second"] = player_df["PersonalFouls"] / player_df["Minutes"] / 60
+    player_df["blocks_per_second"] = (
+        player_df["BlockedShots"] / player_df["Minutes"] / 60
+    )
+    player_df["turnovers_per_second"] = (
+        player_df["Turnovers"] / player_df["Minutes"] / 60
+    )
+    player_df["fouls_per_second"] = (
+        player_df["PersonalFouls"] / player_df["Minutes"] / 60
+    )
 
     # drop anyone that didn't play a minute or has null values (could be took no shots etc.)
     player_df = player_df.loc[player_df["Minutes"] > 0].dropna()
 
     # work in progress, but these will be the columns to start with
-    player_df = player_df[[
-        "two_attempt_rate",
-        "two_success_rate",
-        "three_success_rate",
-        "ft_success_rate",
-        # "points_per_second",
-        # "shots_per_second",
-        # "rebounds_per_second",
-        # "assists_per_second",
-        # "steals_per_second",
-        # "blocks_per_second",
-        # "turnovers_per_second",
-        # "fouls_per_second",
-    ]]
+    player_df = player_df[
+        [
+            "two_attempt_rate",
+            "two_success_rate",
+            "three_success_rate",
+            "ft_success_rate",
+            # "points_per_second",
+            # "shots_per_second",
+            # "rebounds_per_second",
+            # "assists_per_second",
+            # "steals_per_second",
+            # "blocks_per_second",
+            # "turnovers_per_second",
+            # "fouls_per_second",
+        ]
+    ]
+
+    # min-max normalization
+    player_df = (player_df-player_df.min())/(player_df.max()-player_df.min())
 
     # columns for the scatter plot (do this before adding labels to the data)
     scatter_cols = player_df.columns.tolist()
@@ -180,22 +199,27 @@ async def k_means_players(
 
     # for now just display 1/10th of the data
     player_df = player_df.sample(
-        frac=0.1, replace=False,
+        frac=0.1,
+        replace=False,
     )
 
     # remove outliers (these are probably folks with very few minutes anyway)
     player_df = player_df.loc[(np.abs(stats.zscore(player_df)) < 3).all(axis=1)]
 
     scatter_data = orjson.loads(player_df.to_json(orient="records"))
-    
+
     return {
-        'data': scatter_data,
-        'columns': scatter_cols,
-        'inertia': model.inertia_
+        "scatter_data": scatter_data,
+        "scatter_columns": scatter_cols,
+        "inertia": model.inertia_,
+        "hist_data": "Not yet!",
     }
 
 
-@ab_api.get("/sim/{season}/{team_one}/{team_two}/{sample_size}")
+@ab_api.get(
+    "/sim/{season}/{team_one}/{team_two}/{sample_size}",
+    dependencies=[Depends(oauth2_scheme)],
+)
 async def full_game_simulation(
     season: FantasyDataSeason,
     team_one: str,
@@ -368,7 +392,9 @@ def run_simulation(matchup_df):
         # converts steals per both teams' possession to steals per defensive possession (since
         # you can't get a steal while you're on offense!)
         # i think this is where we would put a tempo factor...
-        steal_probs = steal_distribution(possession_length, defensive_team, on_floor_df, tempo_factor)
+        steal_probs = steal_distribution(
+            possession_length, defensive_team, on_floor_df, tempo_factor
+        )
 
         # we also need turnover probabilities here
         turnover_probs = turnover_distribution(
@@ -421,7 +447,9 @@ def run_simulation(matchup_df):
         # if a defensive player blocks, 50/50 chance to be a turnover.
         # using blocks per second over the season.
         # we're either crediting miss+block, or miss+block+rebound.
-        block_probs = block_distribution(possession_length, defensive_team, on_floor_df, tempo_factor)
+        block_probs = block_distribution(
+            possession_length, defensive_team, on_floor_df, tempo_factor
+        )
 
         # block check!
         block_success = rng.random()
@@ -500,7 +528,9 @@ def run_simulation(matchup_df):
 
         # if we've made it this far, the shot was not blocked.
         # but did it go in? and was there a foul?
-        foul_probs = foul_distribution(possession_length, defensive_team, on_floor_df, tempo_factor)
+        foul_probs = foul_distribution(
+            possession_length, defensive_team, on_floor_df, tempo_factor
+        )
 
         # defensive foul check! (potential improvement, offensive fouls and
         # non-shooting fouls)
@@ -1019,9 +1049,7 @@ def steal_distribution(possession_length, defensive_team, on_floor_df, tempo_fac
     # now use rate parameter to calculate CDF per player, per possession.
     # x = the percentage of the team's gametime that has elapsed
     steal_probs["steal_chance_cdf_new"] = 1 - np.e ** (
-        -1
-        * steal_probs["steal_chance_exp_lambda"]
-        * possession_length
+        -1 * steal_probs["steal_chance_exp_lambda"] * possession_length
     )
     return steal_probs
 
@@ -1077,7 +1105,10 @@ def rebound_distribution(offensive_team, defensive_team, on_floor_df):
     )
 
 
-@ab_api.get("/FantasyDataRefresh/PlayerGameDay/{game_year}/{game_month}/{game_day}")
+@ab_api.get(
+    "/FantasyDataRefresh/PlayerGameDay/{game_year}/{game_month}/{game_day}",
+    dependencies=[Depends(oauth2_scheme)],
+)
 async def refresh_fd_player_games(
     game_year: int,
     game_month: int,
@@ -1102,7 +1133,9 @@ async def refresh_fd_player_games(
     return {"message": "Mongo refresh complete!"}
 
 
-@ab_api.get("/FantasyDataRefresh/PlayerSeason/{season}")
+@ab_api.get(
+    "/FantasyDataRefresh/PlayerSeason/{season}", dependencies=[Depends(oauth2_scheme)]
+)
 async def refresh_fd_player_season(
     season: FantasyDataSeason,
     client: AsyncIOMotorClient = Depends(get_odm),
@@ -1134,7 +1167,10 @@ async def refresh_fd_player_season(
     return {"message": "Mongo refresh complete!"}
 
 
-@ab_api.get("/FantasyDataRefresh/PlayerSeasonTeam/{season}/{team}")
+@ab_api.get(
+    "/FantasyDataRefresh/PlayerSeasonTeam/{season}/{team}",
+    dependencies=[Depends(oauth2_scheme)],
+)
 async def refresh_fd_player_season_team(
     season: FantasyDataSeason,
     team: str,

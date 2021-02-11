@@ -1,6 +1,14 @@
 Live at https://tarpey.dev/
 Dev version live at https://dev.tarpey.dev (unless I broke something)
 
+The stack from front-to-back:
+HTML (where it all began)
+CSS (custom + components from Shoelace)
+JavaScript (for charts, D3 and Plotly)
+FastAPI in Python for the backend
+MongoDB (interaction using Motor and ODMantic)
+Hosted on Google Cloud Run
+
 References:
 
 FastAPI — How to add basic and cookie authentication
@@ -30,6 +38,14 @@ Async fetch
 https://stackoverflow.com/questions/46241827/fetch-api-requesting-multiple-get-requests
 https://stackoverflow.com/questions/54685210/calling-sync-functions-from-async-function
 
+JavaScript events
+https://stackoverflow.com/questions/256754/how-to-pass-arguments-to-addeventlistener-listener-function
+https://stackoverflow.com/questions/45353852/load-data-from-api-onclick
+
+D3
+https://chartio.com/resources/tutorials/how-to-resize-an-svg-when-the-window-is-resized-in-d3-js/
+https://www.d3-graph-gallery.com/graph/interactivity_transition.html
+
 MongoDB with FastAPI
 https://github.com/tiangolo/fastapi/issues/1515
 https://github.com/tiangolo/fastapi/issues/452
@@ -40,6 +56,21 @@ https://github.com/tiangolo/fastapi/issues/1487#issuecomment-657290725
 https://www.cloudcity.io/blog/2019/02/27/things-i-wish-they-told-me-about-multiprocessing-in-python/
 https://stackoverflow.com/questions/20387510/proper-way-to-use-multiprocessor-pool-in-a-nested-loop
 https://stackoverflow.com/questions/38271547/when-should-we-call-multiprocessing-pool-join
+
+licenses
+For autobracket, specifically the scatter plot:
+https://observablehq.com/@d3/brushable-scatterplot-matrix
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 There's so much that can go wrong when you're building one of these things.
 
