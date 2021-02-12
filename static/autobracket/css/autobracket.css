@@ -29,26 +29,41 @@
 }
 
 .svg-container {
-  display: inline-block;
-  position: relative;
+  display: flex;
+  justify-content: center;
   width: 100%;
-  padding-bottom: 100%;
   vertical-align: top;
   overflow: hidden;
+  min-height: 70vh;
+}
+/* page-size charts on mobile need a different min-height.
+max-width is where the height of the chart maxes out.
+min-height 90vw to account for the 5vw margin on each side */
+@media only screen and (max-width: 1020px) {
+  .svg-container {
+    display: flex;
+    justify-content: center;
+    width: 100%;
+    vertical-align: top;
+    overflow: hidden;
+    min-height: 90vw;
+  }
 }
 
 #current-chart {
-  display: inline-block;
-  position: absolute;
-  top: 0;
-  left: 0;
+  max-height: 70vh;
 }
 
-.left {
-  float: left;
+#exhibit-changer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 20px 0;
 }
-.right {
-  float: right;
+
+.axis-ticks {
+  font-size: 16px;
+  font-family:"Lato",sans-serif;
 }
 
 /* shoelace */

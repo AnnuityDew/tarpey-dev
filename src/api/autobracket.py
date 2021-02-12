@@ -164,8 +164,11 @@ async def k_means_players(
         player_df["PersonalFouls"] / player_df["Minutes"] / 60
     )
 
+    # minutes distribution for histogram
+    hist_data = player_df["Minutes"].values.tolist()
+
     # drop anyone that didn't play a minute or has null values (could be took no shots etc.)
-    player_df = player_df.loc[player_df["Minutes"] > 0].dropna()
+    player_df = player_df.loc[player_df["Minutes"] > 100].dropna()
 
     # work in progress, but these will be the columns to start with
     player_df = player_df[
@@ -199,7 +202,7 @@ async def k_means_players(
 
     # for now just display 1/10th of the data
     player_df = player_df.sample(
-        frac=0.1,
+        frac=0.2,
         replace=False,
     )
 
@@ -212,7 +215,7 @@ async def k_means_players(
         "scatter_data": scatter_data,
         "scatter_columns": scatter_cols,
         "inertia": model.inertia_,
-        "hist_data": "Not yet!",
+        "hist_data": hist_data,
     }
 
 
