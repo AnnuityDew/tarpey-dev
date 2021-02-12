@@ -98,6 +98,13 @@ hr {
   align-items: center;
 }
 
+.body-nav {
+  display: flex;
+  flex-flow: row wrap;
+  justify-content: center;
+  align-items: center;
+}
+
 a.small-nav-link {
   color: #FFFFFF;
   text-decoration: none;
@@ -109,6 +116,17 @@ a.small-nav-link {
   font-family: "Lato",sans-serif;
   flex: 1 0 auto;
   flex-basis: auto;
+}
+
+a.body-nav-link {
+  color: #FFFFFF;
+  text-decoration: none;
+  margin: 3px;
+  padding: 8px;
+  border-style: solid;
+  border-width: 1px;
+  border-color: #FFFFFF;
+  font-family: "Lato",sans-serif;
 }
 
 a.small-nav-link:hover, a.big-nav-link:hover {

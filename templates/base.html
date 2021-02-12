@@ -31,7 +31,7 @@
 <body>
   <header>
     <nav class="head-nav">
-      <span class="align-h">Hello{% if request.state.active_user %},
+      <span class=>Hello{% if request.state.active_user %},
       {{ request.state.active_user }}{% endif %}!</span>
       <a class="small-nav-link index" href="{{ url_for('homepage') }}">home</a>
       <a class="small-nav-link mildredleague" href="{{ url_for('mildredleague') }}">mildred league</a>

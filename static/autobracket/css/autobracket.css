@@ -52,6 +52,10 @@ min-height 90vw to account for the 5vw margin on each side */
 
 #current-chart {
   max-height: 70vh;
+  max-width: 70vh;
+  /* without an explicit width, safari will bug out
+  if we try to do a flex svg */
+  flex: 1 0 auto;
 }
 
 #exhibit-changer {
