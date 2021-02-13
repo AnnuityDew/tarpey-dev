@@ -2,6 +2,7 @@
 from datetime import date
 from enum import Enum
 import multiprocessing
+from typing import Dict
 import orjson
 from time import perf_counter
 
@@ -50,13 +51,10 @@ class PlayerSeason(Model):
     FieldGoalsPercentage: float
     TwoPointersMade: int
     TwoPointersAttempted: int
-    TwoPointersPercentage: float
     ThreePointersMade: int
     ThreePointersAttempted: int
-    ThreePointersPercentage: float
     FreeThrowsMade: int
     FreeThrowsAttempted: int
-    FreeThrowsPercentage: float
     OffensiveRebounds: int
     DefensiveRebounds: int
     Rebounds: int
@@ -68,6 +66,34 @@ class PlayerSeason(Model):
     Points: int
     FantasyPointsFanDuel: float
     FantasyPointsDraftKings: float
+    two_attempt_chance: float
+    two_chance: float
+    three_chance: float
+    ft_chance: float
+
+
+class KenpomTeam(Model):
+    Season: FantasyDataSeason
+    Rk: int
+    Team: str
+    Conf: str
+    Wins: int
+    Losses: int
+    AdjEM: float
+    AdjO: float
+    AdjD: float
+    AdjT: float
+    Luck: float
+    OppAdjEM: float
+    OppO: float
+    OppD: float
+    NCAdjEM: float
+
+
+class SimulationRun(Model):
+    game_summary: Dict
+    team_box_score: Dict
+    full_box_score: Dict
 
 
 @ab_api.get("/stats/{season}/all", dependencies=[Depends(oauth2_scheme)])
@@ -134,19 +160,6 @@ async def k_means_players(
     ).set_index(["Team", "PlayerID"])
 
     # calculate potential columns for clustering, drop others
-    player_df["two_attempt_rate"] = (
-        player_df["TwoPointersAttempted"] / player_df["FieldGoalsAttempted"]
-    )
-    player_df["two_success_rate"] = (
-        player_df["TwoPointersMade"] / player_df["TwoPointersAttempted"]
-    )
-    player_df["three_success_rate"] = (
-        player_df["ThreePointersMade"] / player_df["ThreePointersAttempted"]
-    )
-    player_df["ft_success_rate"] = (
-        player_df["FreeThrowsMade"] / player_df["FreeThrowsAttempted"]
-    )
-
     player_df["points_per_second"] = player_df["Points"] / player_df["Minutes"] / 60
     player_df["shots_per_second"] = (
         player_df["FieldGoalsAttempted"] / player_df["Minutes"] / 60
@@ -167,16 +180,16 @@ async def k_means_players(
     # minutes distribution for histogram
     hist_data = player_df["Minutes"].values.tolist()
 
-    # drop anyone that didn't play a minute or has null values (could be took no shots etc.)
-    player_df = player_df.loc[player_df["Minutes"] > 100].dropna()
+    # drop anyone that didn't play a minute
+    player_df = player_df.loc[player_df["Minutes"] > 100]
 
     # work in progress, but these will be the columns to start with
     player_df = player_df[
         [
-            "two_attempt_rate",
-            "two_success_rate",
-            "three_success_rate",
-            "ft_success_rate",
+            "two_attempt_chance",
+            "two_chance",
+            "three_chance",
+            "ft_chance",
             # "points_per_second",
             # "shots_per_second",
             # "rebounds_per_second",
@@ -189,7 +202,7 @@ async def k_means_players(
     ]
 
     # min-max normalization
-    player_df = (player_df-player_df.min())/(player_df.max()-player_df.min())
+    player_df = (player_df - player_df.min()) / (player_df.max() - player_df.min())
 
     # columns for the scatter plot (do this before adding labels to the data)
     scatter_cols = player_df.columns.tolist()
@@ -220,13 +233,13 @@ async def k_means_players(
 
 
 @ab_api.get(
-    "/sim/{season}/{team_one}/{team_two}/{sample_size}",
+    "/sim/{season}/{away_team}/{home_team}/{sample_size}",
     dependencies=[Depends(oauth2_scheme)],
 )
 async def full_game_simulation(
     season: FantasyDataSeason,
-    team_one: str,
-    team_two: str,
+    away_team: str,
+    home_team: str,
     sample_size: int = Path(..., gt=0, le=10),
     client: AsyncIOMotorClient = Depends(get_odm),
 ):
@@ -239,7 +252,7 @@ async def full_game_simulation(
         async for player_season in engine.find(
             PlayerSeason,
             (PlayerSeason.Season == season)
-            & ((PlayerSeason.Team == team_one) | (PlayerSeason.Team == team_two)),
+            & ((PlayerSeason.Team == away_team) | (PlayerSeason.Team == home_team)),
             sort=(PlayerSeason.Team, PlayerSeason.StatID),
         )
     ]
@@ -248,6 +261,9 @@ async def full_game_simulation(
     matchup_df = pandas.DataFrame(
         [player_season.doc() for player_season in matchup_data]
     )
+    # create an Away and Home field for identification in the simulation
+    matchup_df["designation"] = "home"
+    matchup_df.loc[matchup_df["Team"] == away_team, "designation"] = "away"
 
     # create a list of matchup dfs representing multiple simulations
     if sample_size > 1:
@@ -263,37 +279,43 @@ async def full_game_simulation(
         # just do one run
         results = run_simulation(matchup_df)
 
-    end_time = perf_counter()
+    sim_time = perf_counter()
+
+    # write results to MongoDB
+    await engine.save_all([SimulationRun(**doc) for doc in results])
+
+    db_time = perf_counter()
 
     return {
-        "time": (end_time - start_time),
+        "sim_time": (sim_time - start_time),
+        "db_time": (db_time - sim_time),
         "simulations": sample_size,
         "results": results,
     }
 
 
 def run_simulation(matchup_df):
-    # assign columns for shot distributions and simulated game stats
-    matchup_df = matchup_df.assign(
-        two_attempt_chance=lambda x: x.TwoPointersAttempted / x.FieldGoalsAttempted,
-        two_chance=lambda x: x.TwoPointersMade / x.TwoPointersAttempted,
-        three_chance=lambda x: x.ThreePointersMade / x.ThreePointersAttempted,
-        ft_chance=lambda x: x.FreeThrowsMade / x.FreeThrowsAttempted,
-        sim_seconds=0,
-        sim_two_pointers_made=0,
-        sim_two_pointers_attempted=0,
-        sim_three_pointers_made=0,
-        sim_three_pointers_attempted=0,
-        sim_free_throws_made=0,
-        sim_free_throws_attempted=0,
-        sim_offensive_rebounds=0,
-        sim_defensive_rebounds=0,
-        sim_assists=0,
-        sim_steals=0,
-        sim_blocks=0,
-        sim_turnovers=0,
-        sim_fouls=0,
-    )
+    # home and away dict
+    home_away_dict = dict(matchup_df.groupby(["designation", "Team"]).size().index)
+    # new columns for simulated game stats
+    sim_columns = [
+        "sim_seconds",
+        "sim_two_pointers_made",
+        "sim_two_pointers_attempted",
+        "sim_three_pointers_made",
+        "sim_three_pointers_attempted",
+        "sim_free_throws_made",
+        "sim_free_throws_attempted",
+        "sim_offensive_rebounds",
+        "sim_defensive_rebounds",
+        "sim_assists",
+        "sim_steals",
+        "sim_blocks",
+        "sim_turnovers",
+        "sim_fouls",
+    ]
+    for column in sim_columns:
+        matchup_df[column] = 0
 
     # minutes for each player, divided by total minutes played for each team
     player_minute_totals = matchup_df.groupby(["Team", "PlayerID"]).agg(
@@ -325,6 +347,10 @@ def run_simulation(matchup_df):
     total_possessions = 0
     tempo_factor = 1 / 1
 
+    # need to think about this more, but for now avg. possession length 15 as a normal
+    possession_length_mean = 15  # 2400 / (Offensive Tempo + Defensive Tempo)
+    possession_length_stdev = 4
+
     # set index that will be the basis for updating box score.
     matchup_df.set_index(["Team", "PlayerID"], inplace=True)
 
@@ -335,12 +361,10 @@ def run_simulation(matchup_df):
 
         if time_remaining == 0:
             # game might be over. calculate score and see if we need OT
-            matchup_df = matchup_df.assign(
-                sim_points=lambda x: (
-                    (x.sim_free_throws_made)
-                    + (x.sim_two_pointers_made * 2)
-                    + (x.sim_three_pointers_made * 3)
-                ),
+            matchup_df["sim_points"] = (
+                matchup_df["sim_free_throws_made"]
+                + (matchup_df["sim_two_pointers_made"] * 2)
+                + (matchup_df["sim_three_pointers_made"] * 3)
             )
             # aggregate team box score
             team_score_df = matchup_df.groupby(level=0).agg({"sim_points": "sum"})
@@ -355,24 +379,32 @@ def run_simulation(matchup_df):
                 # end loop!
                 break
 
-        # possession length simulated here as uniform from 5-30 seconds, but
-        # we definitely need to pull in some sort of tempo per team here.
+        # uniform 5-30 seconds doesn't give us enough stats. we're gonna
+        # try modeling possession length as a normal.
+        # we definitely need to pull in some sort of tempo per team here,
+        # but for now let's aim for a mean of 140 possessions per game.
         if shot_clock_reset:
             # possession counter
             total_possessions += 1
             possession_length = min(
                 [
-                    (30 - 5) * rng.random() + 5,
+                    rng.normal(
+                        loc=possession_length_mean, scale=possession_length_stdev
+                    ),
                     time_remaining,
                 ]
             )
         else:
             # shot clock didn't reset, so just use part of the leftover seconds
+            # to "squish" the normal distribution to the left.
             # an improvement here would be to lower the likelihood of a successful
             # offensive possession
             possession_length = min(
                 [
-                    (30 - possession_length) * rng.random(),
+                    rng.normal(
+                        loc=possession_length_mean * possession_length / 30,
+                        scale=possession_length_stdev * possession_length / 30,
+                    ),
                     time_remaining,
                 ]
             )
@@ -407,20 +439,22 @@ def run_simulation(matchup_df):
         # the steal/turnover check! we're modeling them as independent.
         # (right now it's possible that a turnover in a given possession
         # will always be a steal, if turnover_chance is less than steal_chance.)
+        # we'll also not use prior probabilities in the turnover logic
+        # for now, for this reason.
         steal_turnover_success = rng.random()
-        steal_chance = steal_probs.loc[defensive_team].steal_chance_cdf.max()
-        turnover_chance = turnover_probs.loc[offensive_team].turnover_chance_cdf.max()
+        team_steal_chance = 1 - steal_probs.no_steal_chance.product()
+        team_turnover_chance = 1 - turnover_probs.no_turnover_chance.product()
 
         # if there's a successful steal, credit the steal and turnover, then flip possession and restart loop!
-        if steal_turnover_success < steal_chance:
+        if steal_turnover_success < team_steal_chance:
             # who got the steal?
-            steal_player = steal_probs.sample(n=1, weights=steal_probs.steal_chance_cdf)
+            steal_player = steal_probs.sample(n=1, weights=steal_probs.steal_chance)
             steal_player["sim_steals"] = steal_player["sim_steals"] + 1
             matchup_df.update(steal_player)
 
             # who committed the turnover?
             turnover_player = turnover_probs.sample(
-                n=1, weights=turnover_probs.turnover_chance_cdf
+                n=1, weights=turnover_probs.turnover_chance
             )
             turnover_player["sim_turnovers"] = turnover_player["sim_turnovers"] + 1
             matchup_df.update(turnover_player)
@@ -430,10 +464,10 @@ def run_simulation(matchup_df):
             possession_flag = 1 - possession_flag
             continue
         # if there's a turnover, credit the turnover, then flip possession and restart loop!
-        elif steal_turnover_success < turnover_chance:
+        elif steal_turnover_success < team_turnover_chance:
             # who committed the turnover?
             turnover_player = turnover_probs.sample(
-                n=1, weights=turnover_probs.turnover_chance_cdf
+                n=1, weights=turnover_probs.turnover_chance
             )
             turnover_player["sim_turnovers"] = turnover_player["sim_turnovers"] + 1
             # update box score, change clock, give ball to other team, reset loop
@@ -447,25 +481,30 @@ def run_simulation(matchup_df):
         # gonna take it and what kind of shot it will be.
         shooting_player = identify_shooter(offensive_team, on_floor_df)
 
-        # if a defensive player blocks, 50/50 chance to be a turnover.
+        # if a defensive player blocks, 50/50 chance to be a rebound.
         # using blocks per second over the season.
         # we're either crediting miss+block, or miss+block+rebound.
+        # we also need to update and provide the given probability of
+        # making it this far
+        given_probability = 1 - team_turnover_chance
         block_probs = block_distribution(
-            possession_length, defensive_team, on_floor_df, tempo_factor
+            possession_length,
+            defensive_team,
+            on_floor_df,
+            tempo_factor,
+            given_probability,
         )
 
         # block check!
         block_success = rng.random()
-        block_chance = block_probs.block_chance_cdf.max()
+        team_block_chance = 1 - block_probs.no_block_chance.product()
 
         # the shot type check!
         two_or_three = rng.random()
 
-        if block_success < block_chance:
+        if block_success < team_block_chance:
             # who got the block?
-            blocking_player = block_probs.sample(
-                n=1, weights=block_probs.block_chance_cdf
-            )
+            blocking_player = block_probs.sample(n=1, weights=block_probs.block_chance)
             blocking_player["sim_blocks"] = blocking_player["sim_blocks"] + 1
             matchup_df.update(blocking_player)
 
@@ -529,21 +568,50 @@ def run_simulation(matchup_df):
                     possession_flag = 1 - possession_flag
                     continue
 
+        # we need to prep for assist and foul calculation here. will involve Bayes,
+        # so we need the components for probability of a successful shot
+        # in this possession (1 minus everything that had to be dodged up
+        # to this point). works as decrementing essentially because
+        # the sequence of events isn't truly independent (i.e. if a turnover
+        # happens in this model, a block will not because the loop restarts)
+        given_probability = given_probability * (1 - team_block_chance)
+
         # if we've made it this far, the shot was not blocked.
         # but did it go in? and was there a foul?
         foul_probs = foul_distribution(
-            possession_length, defensive_team, on_floor_df, tempo_factor
+            possession_length,
+            defensive_team,
+            on_floor_df,
+            tempo_factor,
+            given_probability,
         )
 
         # defensive foul check! (potential improvement, offensive fouls and
         # non-shooting fouls)
-        foul_chance = foul_probs.loc[defensive_team].foul_chance_cdf.max()
+        team_foul_chance = 1 - foul_probs.no_foul_chance.product()
         foul_occurred = rng.random()
+
+        # non shooting foul check! this is 50/50 for now.
+        if foul_occurred < team_foul_chance:
+            non_shooting_foul_check = rng.integers(2, size=1)[0]
+
+            if non_shooting_foul_check == 1:
+                # no change of possession. credit a non-shooting foul.
+                # make a new possession
+                fouling_player = foul_probs.sample(n=1, weights=foul_probs.foul_chance)
+                fouling_player["sim_fouls"] = fouling_player["sim_fouls"] + 1
+                matchup_df.update(fouling_player)
+
+                time_remaining -= possession_length
+                shot_clock_reset = not shot_clock_reset
+                continue
 
         if two_or_three < shooting_player.two_attempt_chance.values[0]:
             # check two point probability
             two_success = rng.random()
-            if two_success < shooting_player.two_chance.values[0]:
+            made_two_chance = shooting_player.two_chance.values[0]
+
+            if two_success < made_two_chance:
                 # credit the shooter with a 2pt attempt and make
                 shooting_player["sim_two_pointers_attempted"] = (
                     shooting_player["sim_two_pointers_attempted"] + 1
@@ -551,10 +619,10 @@ def run_simulation(matchup_df):
                 shooting_player["sim_two_pointers_made"] = (
                     shooting_player["sim_two_pointers_made"] + 1
                 )
-                if foul_occurred < foul_chance:
+                if foul_occurred < team_foul_chance:
                     # and-1! first, credit the foul
                     fouling_player = foul_probs.sample(
-                        n=1, weights=foul_probs.foul_chance_cdf
+                        n=1, weights=foul_probs.foul_chance
                     )
                     fouling_player["sim_fouls"] = fouling_player["sim_fouls"] + 1
                     matchup_df.update(fouling_player)
@@ -574,18 +642,23 @@ def run_simulation(matchup_df):
                 matchup_df.update(shooting_player)
 
                 # assist logic after a made shot. who assisted it if anyone?
+                given_probability = given_probability * made_two_chance
                 assist_probs = assist_distribution(
-                    possession_length, offensive_team, on_floor_df, tempo_factor
+                    possession_length,
+                    offensive_team,
+                    on_floor_df,
+                    tempo_factor,
+                    given_probability,
                 )
 
                 # assist check!
                 assist_success = rng.random()
-                assist_chance = assist_probs.assist_chance_cdf.max()
+                team_assist_chance = 1 - assist_probs.no_assist_chance.product()
 
-                if assist_success < assist_chance:
+                if assist_success < team_assist_chance:
                     # who got the assist?
                     assisting_player = assist_probs.sample(
-                        n=1, weights=assist_probs.assist_chance_cdf
+                        n=1, weights=assist_probs.assist_chance
                     )
                     assisting_player["sim_assists"] = (
                         assisting_player["sim_assists"] + 1
@@ -598,10 +671,10 @@ def run_simulation(matchup_df):
                 continue
 
             else:
-                if foul_occurred < foul_chance:
+                if foul_occurred < team_foul_chance:
                     # if fouled, two FTs, and shooter is NOT credited with a missed shot
                     fouling_player = foul_probs.sample(
-                        n=1, weights=foul_probs.foul_chance_cdf
+                        n=1, weights=foul_probs.foul_chance
                     )
                     fouling_player["sim_fouls"] = fouling_player["sim_fouls"] + 1
                     matchup_df.update(fouling_player)
@@ -717,6 +790,8 @@ def run_simulation(matchup_df):
         else:
             # check three point probability
             three_success = rng.random()
+            made_three_chance = shooting_player.three_chance.values[0]
+
             if three_success < shooting_player.three_chance.values[0]:
                 # credit the shooter with a 2pt attempt and make
                 shooting_player["sim_three_pointers_attempted"] = (
@@ -725,10 +800,10 @@ def run_simulation(matchup_df):
                 shooting_player["sim_three_pointers_made"] = (
                     shooting_player["sim_three_pointers_made"] + 1
                 )
-                if foul_occurred < foul_chance:
+                if foul_occurred < team_foul_chance:
                     # and-1! first, credit the foul
                     fouling_player = foul_probs.sample(
-                        n=1, weights=foul_probs.foul_chance_cdf
+                        n=1, weights=foul_probs.foul_chance
                     )
                     fouling_player["sim_fouls"] = fouling_player["sim_fouls"] + 1
                     matchup_df.update(fouling_player)
@@ -748,18 +823,23 @@ def run_simulation(matchup_df):
                 matchup_df.update(shooting_player)
 
                 # assist logic after a made shot. who assisted it if anyone?
+                given_probability = given_probability * made_three_chance
                 assist_probs = assist_distribution(
-                    possession_length, offensive_team, on_floor_df, tempo_factor
+                    possession_length,
+                    offensive_team,
+                    on_floor_df,
+                    tempo_factor,
+                    given_probability,
                 )
 
                 # assist check!
                 assist_success = rng.random()
-                assist_chance = assist_probs.assist_chance_cdf.max()
+                team_assist_chance = 1 - assist_probs.no_assist_chance.product()
 
-                if assist_success < assist_chance:
+                if assist_success < team_assist_chance:
                     # who got the assist?
                     assisting_player = assist_probs.sample(
-                        n=1, weights=assist_probs.assist_chance_cdf
+                        n=1, weights=assist_probs.assist_chance
                     )
                     assisting_player["sim_assists"] = (
                         assisting_player["sim_assists"] + 1
@@ -772,10 +852,10 @@ def run_simulation(matchup_df):
                 continue
 
             else:
-                if foul_occurred < foul_chance:
+                if foul_occurred < team_foul_chance:
                     # if fouled, three FTs, and shooter is NOT credited with a missed shot
                     fouling_player = foul_probs.sample(
-                        n=1, weights=foul_probs.foul_chance_cdf
+                        n=1, weights=foul_probs.foul_chance
                     )
                     fouling_player["sim_fouls"] = fouling_player["sim_fouls"] + 1
                     matchup_df.update(fouling_player)
@@ -912,19 +992,36 @@ def run_simulation(matchup_df):
         ]
     ]
 
-    # calculate totals
-    box_score_df = box_score_df.assign(sim_minutes=lambda x: x.sim_seconds / 60)
+    # calculate totals and downcast to ints
+    box_score_df = box_score_df.assign(
+        sim_minutes=lambda x: x.sim_seconds / 60
+    ).convert_dtypes()
 
-    # aggregate team box score
-    team_box_score_df = box_score_df.groupby(level=0).sum()
+    # aggregate team box score and downcast to ints
+    team_box_score_df = box_score_df.groupby(level=0).sum().convert_dtypes()
 
-    box_score_json = orjson.loads(box_score_df.to_json(orient="index"))
+    full_box_score_json = orjson.loads(box_score_df.to_json(orient="index"))
     team_box_score_json = orjson.loads(team_box_score_df.to_json(orient="index"))
+    margin = int(
+        team_box_score_df.loc[home_away_dict["home"], "sim_points"]
+        - team_box_score_df.loc[home_away_dict["away"], "sim_points"]
+    )
 
-    return [total_possessions, team_box_score_json, box_score_json]
+    return {
+        "game_summary": {
+            "away_team": home_away_dict["away"],
+            "home_team": home_away_dict["home"],
+            "home_margin": margin,
+            "total_possessions": total_possessions,
+        },
+        "team_box_score": team_box_score_json,
+        "full_box_score": full_box_score_json,
+    }
 
 
-def assist_distribution(possession_length, offensive_team, on_floor_df, tempo_factor):
+def assist_distribution(
+    possession_length, offensive_team, on_floor_df, tempo_factor, successful_shot_prob
+):
     assist_fields = [
         "Assists",
         "Minutes",
@@ -933,21 +1030,33 @@ def assist_distribution(possession_length, offensive_team, on_floor_df, tempo_fa
     assist_probs = on_floor_df.loc[[offensive_team], assist_fields]
     # alternative...let's try truly modeling as an exponential distribution.
     # first calculate rate parameter (per game estimate)
-    assist_probs["assist_chance_exp_lambda"] = (
-        assist_probs["Assists"] / assist_probs["Minutes"] * 20 * tempo_factor
+    assist_probs["assist_chance_exp_theta"] = 1 / (
+        (2 * tempo_factor) * assist_probs["Assists"] / assist_probs["Minutes"] / 60
     )
     # now use rate parameter to calculate CDF per player, per possession.
     # x = the percentage of the team's gametime that has elapsed
-    assist_probs["assist_chance_cdf"] = 1 - np.e ** (
-        -1
-        * assist_probs["assist_chance_exp_lambda"]
-        * possession_length
-        / (20 * tempo_factor)
+    assist_probs["no_assist_chance_prior"] = np.e ** (
+        -1 * possession_length / assist_probs["assist_chance_exp_theta"]
     )
+    # we could also randomly sample an exponential for each player using numpy
+    # and see if it's less than the number of possession_seconds. might be
+    # interesting to see how this changes the simulation.
+    assist_probs["assist_chance_prior"] = 1 - assist_probs["no_assist_chance_prior"]
+
+    # we need to do some bayes here to handle assists properly! everything
+    # up to this point was modeled as independent, but assists can only happen
+    # given a made shot. So we calculate P(assist|made shot) here.
+    assist_probs["assist_chance"] = (
+        assist_probs["assist_chance_prior"] / successful_shot_prob
+    )
+    assist_probs["no_assist_chance"] = 1 - assist_probs["assist_chance"]
+
     return assist_probs
 
 
-def foul_distribution(possession_length, defensive_team, on_floor_df, tempo_factor):
+def foul_distribution(
+    possession_length, defensive_team, on_floor_df, tempo_factor, attempted_shot_prob
+):
     foul_fields = [
         "PersonalFouls",
         "Minutes",
@@ -958,44 +1067,64 @@ def foul_distribution(possession_length, defensive_team, on_floor_df, tempo_fact
     # the x2 factor is still here for fouls, even though you can foul on offense or defense.
     # but for now this model is assuming you can only foul on defense. we would scrap
     # this factor once we're modeling offensive fouls independently
-    # foul_probs["foul_chance_pdf"] = (
-    #     foul_probs["PersonalFouls"] / foul_probs["Minutes"] / 60 * possession_length * 2
-    # )
-    # foul_probs["foul_chance_cdf"] = foul_probs.groupby(level=0).cumsum()[
-    #     "foul_chance_pdf"
-    # ]
-    # alternative...let's try truly modeling as an exponential distribution.
-    # first calculate rate parameter (fouls per game estimate)
-    foul_probs["foul_chance_exp_lambda"] = (
-        foul_probs["PersonalFouls"] / foul_probs["Minutes"] * 20 * tempo_factor
+
+    # let's try truly modeling as an exponential distribution.
+    # first calculate rate parameter (1 / theta or beta), aka
+    # (1 / average amount of seconds between two events)
+    # factor of 2 * tempo_factor because you can only steal
+    # when you're playing on defense!
+    foul_probs["foul_chance_exp_theta"] = 1 / (
+        (2 * tempo_factor) * foul_probs["PersonalFouls"] / foul_probs["Minutes"] / 60
     )
     # now use rate parameter to calculate CDF per player, per possession.
     # x = the percentage of the team's gametime that has elapsed
-    foul_probs["foul_chance_cdf"] = 1 - np.e ** (
-        -1
-        * foul_probs["foul_chance_exp_lambda"]
-        * possession_length
-        / (20 * tempo_factor)
+    foul_probs["no_foul_chance_prior"] = np.e ** (
+        -1 * possession_length / foul_probs["foul_chance_exp_theta"]
     )
+    # we could also randomly sample an exponential for each player using numpy
+    # and see if it's less than the number of possession_seconds. might be
+    # interesting to see how this changes the simulation.
+    foul_probs["foul_chance_prior"] = 1 - foul_probs["no_foul_chance_prior"]
+
+    # we need to do some bayes here to handle fouls properly! everything
+    # up to this point was modeled as independent, but fouls can only happen
+    # given a made shot. So we calculate P(foul|made shot) here.
+    foul_probs["foul_chance"] = foul_probs["foul_chance_prior"] / attempted_shot_prob
+    foul_probs["no_foul_chance"] = 1 - foul_probs["foul_chance"]
+
     return foul_probs
 
 
-def block_distribution(possession_length, defensive_team, on_floor_df, tempo_factor):
+def block_distribution(
+    possession_length, defensive_team, on_floor_df, tempo_factor, no_turnover_prob
+):
     block_fields = ["BlockedShots", "Minutes", "sim_blocks"]
     block_probs = on_floor_df.loc[[defensive_team], block_fields]
-    # alternative...let's try truly modeling as an exponential distribution.
-    # first calculate rate parameter (per game estimate)
-    block_probs["block_chance_exp_lambda"] = (
-        block_probs["BlockedShots"] / block_probs["Minutes"] * 20 * tempo_factor
+
+    # let's try truly modeling as an exponential distribution.
+    # first calculate rate parameter (1 / theta or beta), aka
+    # (1 / average amount of seconds between two events)
+    # factor of 2 * tempo_factor because you can only steal
+    # when you're playing on defense!
+    block_probs["block_chance_exp_theta"] = 1 / (
+        (2 * tempo_factor) * block_probs["BlockedShots"] / block_probs["Minutes"] / 60
     )
     # now use rate parameter to calculate CDF per player, per possession.
     # x = the percentage of the team's gametime that has elapsed
-    block_probs["block_chance_cdf"] = 1 - np.e ** (
-        -1
-        * block_probs["block_chance_exp_lambda"]
-        * possession_length
-        / (20 * tempo_factor)
+    block_probs["no_block_chance_prior"] = np.e ** (
+        -1 * possession_length / block_probs["block_chance_exp_theta"]
     )
+    # we could also randomly sample an exponential for each player using numpy
+    # and see if it's less than the number of possession_seconds. might be
+    # interesting to see how this changes the simulation.
+    block_probs["block_chance_prior"] = 1 - block_probs["no_block_chance_prior"]
+
+    # we need to do some bayes here to handle blocks properly! blocks can
+    # only happen in our model given no turnover. so we calculate
+    # P(block|no turnover) here.
+    block_probs["block_chance"] = block_probs["block_chance_prior"] / no_turnover_prob
+    block_probs["no_block_chance"] = 1 - block_probs["block_chance"]
+
     return block_probs
 
 
@@ -1038,22 +1167,24 @@ def steal_distribution(possession_length, defensive_team, on_floor_df, tempo_fac
         "sim_steals",
     ]
     steal_probs = on_floor_df.loc[[defensive_team], steal_fields]
-    steal_probs["steal_chance_pdf"] = (
-        steal_probs["Steals"] / steal_probs["Minutes"] / 60 * possession_length * 2
-    )
-    steal_probs["steal_chance_cdf"] = steal_probs.groupby(level=0).cumsum()[
-        "steal_chance_pdf"
-    ]
-    # alternative...let's try truly modeling as an exponential distribution.
-    # first calculate rate parameter (1 / average amount of seconds between two events)
-    steal_probs["steal_chance_exp_lambda"] = (
-        steal_probs["Steals"] / steal_probs["Minutes"] / 60
+    # let's try truly modeling as an exponential distribution.
+    # first calculate rate parameter (1 / theta or beta), aka
+    # (1 / average amount of seconds between two events)
+    # factor of 2 * tempo_factor because you can only steal
+    # when you're playing on defense!
+    steal_probs["steal_chance_exp_theta"] = 1 / (
+        (2 * tempo_factor) * steal_probs["Steals"] / steal_probs["Minutes"] / 60
     )
     # now use rate parameter to calculate CDF per player, per possession.
     # x = the percentage of the team's gametime that has elapsed
-    steal_probs["steal_chance_cdf_new"] = 1 - np.e ** (
-        -1 * steal_probs["steal_chance_exp_lambda"] * possession_length
+    steal_probs["no_steal_chance"] = np.e ** (
+        -1 * possession_length / steal_probs["steal_chance_exp_theta"]
     )
+    # we could also randomly sample an exponential for each player using numpy
+    # and see if it's less than the number of possession_seconds. might be
+    # interesting to see how this changes the simulation.
+    steal_probs["steal_chance"] = 1 - steal_probs["no_steal_chance"]
+
     return steal_probs
 
 
@@ -1064,19 +1195,27 @@ def turnover_distribution(possession_length, offensive_team, on_floor_df, tempo_
         "sim_turnovers",
     ]
     turnover_probs = on_floor_df.loc[[offensive_team], turnover_fields]
-    # alternative...let's try truly modeling as an exponential distribution.
-    # first calculate rate parameter (per game estimate)
-    turnover_probs["turnover_chance_exp_lambda"] = (
-        turnover_probs["Turnovers"] / turnover_probs["Minutes"] * 20 * tempo_factor
+    # let's try truly modeling as an exponential distribution.
+    # first calculate rate parameter (1 / theta or beta), aka
+    # (1 / average amount of seconds between two events)
+    # factor of 2 * tempo_factor because you can only steal
+    # when you're playing on defense!
+    turnover_probs["turnover_chance_exp_theta"] = 1 / (
+        (2 * tempo_factor)
+        * turnover_probs["Turnovers"]
+        / turnover_probs["Minutes"]
+        / 60
     )
     # now use rate parameter to calculate CDF per player, per possession.
     # x = the percentage of the team's gametime that has elapsed
-    turnover_probs["turnover_chance_cdf"] = 1 - np.e ** (
-        -1
-        * turnover_probs["turnover_chance_exp_lambda"]
-        * possession_length
-        / (20 * tempo_factor)
+    turnover_probs["no_turnover_chance"] = np.e ** (
+        -1 * possession_length / turnover_probs["turnover_chance_exp_theta"]
     )
+    # we could also randomly sample an exponential for each player using numpy
+    # and see if it's less than the number of possession_seconds. might be
+    # interesting to see how this changes the simulation.
+    turnover_probs["turnover_chance"] = 1 - turnover_probs["no_turnover_chance"]
+
     return turnover_probs
 
 
@@ -1162,6 +1301,37 @@ async def refresh_fd_player_season(
 
     # position is None for about 3200 players...fill with "Not Found"
     player_season_df["Position"] = player_season_df["Position"].fillna("Not Found")
+
+    # renaming a few fields - we're going to overwrite them with more exact percentages next step
+    player_season_df.rename(
+        columns={
+            "TwoPointersPercentage": "two_chance",
+            "ThreePointersPercentage": "three_chance",
+            "FreeThrowsPercentage": "ft_chance",
+        },
+        inplace=True,
+    )
+
+    # (re-)calculated fields for use in analysis. need to cast to float for division
+    # to work properly, then fillna with zero
+    player_season_df["two_attempt_chance"] = (
+        pandas.to_numeric(player_season_df["TwoPointersAttempted"], downcast="float")
+        / pandas.to_numeric(player_season_df["FieldGoalsAttempted"], downcast="float")
+    ).fillna(0)
+    player_season_df["two_chance"] = (
+        pandas.to_numeric(player_season_df["TwoPointersMade"], downcast="float")
+        / pandas.to_numeric(player_season_df["TwoPointersAttempted"], downcast="float")
+    ).fillna(0)
+    player_season_df["three_chance"] = (
+        pandas.to_numeric(player_season_df["ThreePointersMade"], downcast="float")
+        / pandas.to_numeric(
+            player_season_df["ThreePointersAttempted"], downcast="float"
+        )
+    ).fillna(0)
+    player_season_df["ft_chance"] = (
+        pandas.to_numeric(player_season_df["FreeThrowsMade"], downcast="float")
+        / pandas.to_numeric(player_season_df["FreeThrowsAttempted"], downcast="float")
+    ).fillna(0)
 
     # back to json for writing to DB
     p = orjson.loads(player_season_df.to_json(orient="records"))
