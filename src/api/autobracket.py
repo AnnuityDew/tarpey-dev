@@ -266,7 +266,7 @@ async def full_game_simulation(
     matchup_df.loc[matchup_df["Team"] == away_team, "designation"] = "away"
 
     # create a list of matchup dfs representing multiple simulations
-    if sample_size > 1:
+    if False:
         cores_to_use = multiprocessing.cpu_count()
         simulations = [matchup_df.copy() for x in range(sample_size)]
 
@@ -277,7 +277,7 @@ async def full_game_simulation(
             p.join()
     else:
         # just do one run
-        results = run_simulation(matchup_df)
+        results = run_simulation(matchup_df, sample_size)
 
     sim_time = perf_counter()
 
@@ -294,7 +294,10 @@ async def full_game_simulation(
     }
 
 
-def run_simulation(matchup_df):
+def run_simulation(matchup_df, sample_size):
+    # sort df by designation and playerID to guarantee order for later operations
+    matchup_df.sort_values(by=["designation", "PlayerID"], inplace=True)
+
     # home and away dict
     home_away_dict = dict(matchup_df.groupby(["designation", "Team"]).size().index)
     # new columns for simulated game stats
@@ -331,20 +334,27 @@ def run_simulation(matchup_df):
         right_index=True,
         how="left",
     )
+    # minute weights will be used in the later step when we're selecting who's on the floor
+    away_minute_weights = matchup_df.loc[
+        matchup_df.designation == "away", ["PlayerID", "minute_dist"]
+    ].to_numpy()
+    home_minute_weights = matchup_df.loc[
+        matchup_df.designation == "home", ["PlayerID", "minute_dist"]
+    ].to_numpy()
 
     # new numpy random number generator
     rng = np.random.default_rng()
 
-    # determine first possession (simple 50/50 for now)
+    # determine first possession in each game (simple 50/50 for now)
     matchup_list = team_minute_totals.index.to_list()
-    possession_flag = rng.integers(2, size=1)[0]
+    possession_flags = rng.integers(2, size=sample_size)
 
-    # game clock start, shot clock reset flag, initialize possession length,
-    # possession counter for each team
-    time_remaining = 60 * 40
-    shot_clock_reset = True
-    possession_length = 0
-    total_possessions = 0
+    # game clock array, shot clock reset array, initialize possession length array,
+    # possession counter for each team for each simulation
+    time_remaining = np.array([60.0 * 40 for x in range(sample_size)])
+    shot_clock_reset = np.ones(sample_size)
+    possession_length = np.zeros(sample_size)
+    total_possessions = np.zeros(sample_size)
     tempo_factor = 1 / 1
 
     # need to think about this more, but for now avg. possession length 15 as a normal
@@ -354,66 +364,114 @@ def run_simulation(matchup_df):
     # set index that will be the basis for updating box score.
     matchup_df.set_index(["Team", "PlayerID"], inplace=True)
 
-    while time_remaining >= 0:
-        # who has the ball?
-        offensive_team = matchup_list[possession_flag]
-        defensive_team = matchup_list[(1 - possession_flag)]
+    # expand the dataframe into X number of simulations. (prepend the index)
+    # https://stackoverflow.com/questions/14744068/prepend-a-level-to-a-pandas-multiindex
+    matchup_df = pandas.concat(
+        [matchup_df.copy() for x in range(sample_size)],
+        keys=[x for x in range(sample_size)],
+        names=["simulation"],
+    )
 
-        if time_remaining == 0:
-            # game might be over. calculate score and see if we need OT
-            matchup_df["sim_points"] = (
-                matchup_df["sim_free_throws_made"]
-                + (matchup_df["sim_two_pointers_made"] * 2)
-                + (matchup_df["sim_three_pointers_made"] * 3)
-            )
-            # aggregate team box score
-            team_score_df = matchup_df.groupby(level=0).agg({"sim_points": "sum"})
+    # loop continues while any game is still ongoing
+    while max(time_remaining) >= 0:
+        # who has the ball in each game?
+        offensive_teams = [matchup_list[flag] for flag in possession_flags]
+        defensive_teams = [matchup_list[1 - flag] for flag in possession_flags]
+
+        # split df into games with time remaining and games with no time remaining
+        ongoing_games = [sim for sim, value in enumerate(time_remaining) if value > 0]
+        games_to_resolve = [
+            sim for sim, value in enumerate(time_remaining) if value == 0
+        ]
+        ongoing_games_df = matchup_df.loc[ongoing_games]
+        games_to_resolve_df = matchup_df.loc[games_to_resolve]
+
+        # games to resolve might be over. calculate score and see if we need OT
+        games_to_resolve_df["sim_points"] = (
+            games_to_resolve_df["sim_free_throws_made"]
+            + (games_to_resolve_df["sim_two_pointers_made"] * 2)
+            + (games_to_resolve_df["sim_three_pointers_made"] * 3)
+        )
+        # aggregate team box score
+        team_scores_df = games_to_resolve_df.groupby(level=[0, 1]).agg(
+            {"sim_points": "sum"}
+        )
+
+        # compare score for each game to resolve. if tied, start overtime for that game
+        for sim in games_to_resolve:
             if (
-                team_score_df.loc[offensive_team][0]
-                == team_score_df.loc[defensive_team][0]
+                team_scores_df.loc[(sim, offensive_teams[sim])][0]
+                == team_scores_df.loc[(sim, defensive_teams[sim])][0]
             ):
                 # start a 5 minute overtime!
-                time_remaining = 60 * 5
-                continue
-            else:
-                # end loop!
-                break
+                time_remaining[sim] = 60 * 5
 
-        # uniform 5-30 seconds doesn't give us enough stats. we're gonna
-        # try modeling possession length as a normal.
+        # this is where a check will go to end the loop if every game is resolved.
+        print("this code is currently missing! need to check for end of all games.")
+
+        # if there was a shot clock reset, this will add a possession to that particular game
+        total_possessions += shot_clock_reset
+
+        # if there was a shot clock reset, we want to use the value from this array of fresh
+        # random numbers from the normal distribution. otherwise, use a squished distribution
+        # based on the previous possession's length.
         # we definitely need to pull in some sort of tempo per team here,
         # but for now let's aim for a mean of 140 possessions per game.
-        if shot_clock_reset:
-            # possession counter
-            total_possessions += 1
-            possession_length = min(
-                [
-                    rng.normal(
-                        loc=possession_length_mean, scale=possession_length_stdev
-                    ),
-                    time_remaining,
-                ]
-            )
-        else:
-            # shot clock didn't reset, so just use part of the leftover seconds
-            # to "squish" the normal distribution to the left.
-            # an improvement here would be to lower the likelihood of a successful
-            # offensive possession
-            possession_length = min(
-                [
-                    rng.normal(
-                        loc=possession_length_mean * possession_length / 30,
-                        scale=possession_length_stdev * possession_length / 30,
-                    ),
-                    time_remaining,
-                ]
-            )
-            shot_clock_reset = not shot_clock_reset
+        fresh_possession_length = rng.normal(
+            loc=possession_length_mean, scale=possession_length_stdev, size=sample_size
+        )
+        recycled_possession_length = rng.normal(
+            loc=possession_length_mean * (30 - possession_length / 30),
+            scale=possession_length_stdev * (30 - possession_length / 30),
+            size=sample_size,
+        )
+        # determine whether or not we should use the fresh possession or recycled in each game.
+        # we can do this by multiplying by the shot_clock_reset_array (or its inverse)
+        fresh_possession_length *= shot_clock_reset
+        recycled_possession_length *= 1 - shot_clock_reset
+
+        # now add the two together to get the new possession length for each game
+        # will either look like x+0 or 0+x for each row
+        possession_length = fresh_possession_length + recycled_possession_length
+
+        # expect another shot clock reset in the next possession by default
+        # (we overwrite this once an event occurs, if necessary)
+        shot_clock_reset = np.ones(sample_size)
 
         # pick 10 players for the current possession based on average time share
-        on_floor_df = matchup_df.groupby(level=0).sample(
-            n=5, replace=False, weights=matchup_df.minute_dist.to_list()
-        )
+        # pandas has a bug so we're doing this with numpy now.
+        on_floor_all_sims = np.array(
+            [
+                np.concatenate(
+                    (
+                        np.isin(
+                            away_minute_weights[:, 0],
+                            rng.choice(
+                                away_minute_weights[:, 0],
+                                size=5,
+                                replace=False,
+                                p=away_minute_weights[:, 1],
+                            ),
+                        ) * 1,
+                        np.isin(
+                            home_minute_weights[:, 0],
+                            rng.choice(
+                                home_minute_weights[:, 0],
+                                size=5,
+                                replace=False,
+                                p=home_minute_weights[:, 1],
+                            ),
+                        ) * 1,
+                    ),
+                )
+                for x in range(sample_size)
+            ]
+        ).flatten()
+        matchup_df["player_on_floor"] = on_floor_all_sims
+        on_floor_df = matchup_df.loc[matchup_df.player_on_floor==1]
+        # on_floor_df = matchup_df.groupby(level=[0, 1]).sample(
+        #     n=5, replace=False, weights=matchup_df.minute_dist.to_list()
+        # )
 
         # add the possession length to the time played for each individual on the floor and update
         on_floor_df["sim_seconds"] = on_floor_df["sim_seconds"] + possession_length
