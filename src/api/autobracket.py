@@ -452,7 +452,8 @@ def run_simulation(matchup_df, sample_size):
                                 replace=False,
                                 p=away_minute_weights[:, 1],
                             ),
-                        ) * 1,
+                        )
+                        * 1,
                         np.isin(
                             home_minute_weights[:, 0],
                             rng.choice(
@@ -461,20 +462,25 @@ def run_simulation(matchup_df, sample_size):
                                 replace=False,
                                 p=home_minute_weights[:, 1],
                             ),
-                        ) * 1,
+                        )
+                        * 1,
                     ),
                 )
                 for x in range(sample_size)
             ]
         ).flatten()
         matchup_df["player_on_floor"] = on_floor_all_sims
-        on_floor_df = matchup_df.loc[matchup_df.player_on_floor==1]
+        # copy here to avoid a later settingwithcopywarning
+        on_floor_df = matchup_df.loc[matchup_df.player_on_floor == 1].copy()
         # on_floor_df = matchup_df.groupby(level=[0, 1]).sample(
         #     n=5, replace=False, weights=matchup_df.minute_dist.to_list()
         # )
 
-        # add the possession length to the time played for each individual on the floor and update
-        on_floor_df["sim_seconds"] = on_floor_df["sim_seconds"] + possession_length
+        # add the possession length to the time played for each individual on the floor and update.
+        # numpy array is expanded 10x so each player of the 10 on the floor can get their time
+        on_floor_df["sim_seconds"] = on_floor_df["sim_seconds"] + np.repeat(
+            possession_length, 10
+        )
         matchup_df.update(on_floor_df)
 
         # now, based on the 10 players on the floor, calculate probability of each event.
@@ -486,12 +492,12 @@ def run_simulation(matchup_df, sample_size):
         # you can't get a steal while you're on offense!)
         # i think this is where we would put a tempo factor...
         steal_probs = steal_distribution(
-            possession_length, defensive_team, on_floor_df, tempo_factor
+            possession_length, defensive_teams, on_floor_df, tempo_factor
         )
 
         # we also need turnover probabilities here
         turnover_probs = turnover_distribution(
-            possession_length, offensive_team, on_floor_df, tempo_factor
+            possession_length, offensive_teams, on_floor_df, tempo_factor
         )
 
         # the steal/turnover check! we're modeling them as independent.
@@ -499,30 +505,60 @@ def run_simulation(matchup_df, sample_size):
         # will always be a steal, if turnover_chance is less than steal_chance.)
         # we'll also not use prior probabilities in the turnover logic
         # for now, for this reason.
-        steal_turnover_success = rng.random()
-        team_steal_chance = 1 - steal_probs.no_steal_chance.product()
-        team_turnover_chance = 1 - turnover_probs.no_turnover_chance.product()
+        steal_turnover_success = rng.random(size=10)
+        team_steal_chances = (
+            1 - steal_probs.groupby(level=0).prod()["no_steal_chance"].to_numpy()
+        )
+        team_turnover_chances = (
+            1 - turnover_probs.groupby(level=0).prod()["no_turnover_chance"].to_numpy()
+        )
+        print("hi")
 
-        # if there's a successful steal, credit the steal and turnover, then flip possession and restart loop!
-        if steal_turnover_success < team_steal_chance:
-            # who got the steal?
-            steal_player = steal_probs.sample(n=1, weights=steal_probs.steal_chance)
-            steal_player["sim_steals"] = steal_player["sim_steals"] + 1
-            matchup_df.update(steal_player)
+        # if there's a successful steal, credit the steal and turnover, then flip possession.
+        # games with steals don't do anything else until the loop restarts for a new possession.
+        successful_steals = steal_turnover_success < team_steal_chances
+        steal_games = [sim for sim, value in enumerate(successful_steals) if value]
 
-            # who committed the turnover?
-            turnover_player = turnover_probs.sample(
-                n=1, weights=turnover_probs.turnover_chance
-            )
-            turnover_player["sim_turnovers"] = turnover_player["sim_turnovers"] + 1
-            matchup_df.update(turnover_player)
+        # who got the steal in each game that had a steal?
+        # pandas really needs to fix their groupby sampling...
+        # let's try to reproduce the issue later with this commit, which worked:
+        # https://github.com/AnnuityDew/tarpeydev/blob/ba344c7b29f3385caf5c964f10accc43ab600bd3/src/api/autobracket.py#L414
+        # hypothesis is that it's because the resulting index is no longer unique.
+        # but that can't be right because i duplicated the first index level
+        # and tried to group from that as well.
+        # for now we'll just have to keep sampling with numpy.
+        # i'm really starting to wonder if it's because weights don't sum to one...
 
-            # change clock, give ball to other team, reset loop
-            time_remaining -= possession_length
-            possession_flag = 1 - possession_flag
-            continue
+        steal_games_df = steal_probs.loc[steal_games]
+        steal_games_numpy = steal_games_df.reset_index()[
+            ["simulation", "Team", "PlayerID", "steal_chance"]
+        ].to_numpy()
+
+        # steal array has a 1 for the player in each steal game that got the steal
+        # APPLY THIS EVENT SAMPLER TO THE OTHER EVENTS.
+        steal_array = event_sampler(rng, steal_games_df, steal_games_numpy)
+
+        steal_games_df["sim_steals"] = steal_games_df["sim_steals"] + steal_array
+        matchup_df.update(steal_games_df)
+
+        print("below, first need to apply the event sampler to turnovers.")
+        print("then, need to figure out the time remaining, possession length, and possession flag arrays.")
+
+        # who committed the turnover?
+        turnover_player = turnover_probs.sample(
+            n=1, weights=turnover_probs.turnover_chance
+        )
+        turnover_player["sim_turnovers"] = turnover_player["sim_turnovers"] + 1
+        matchup_df.update(turnover_player)
+
+        # change clock, give ball to other team, reset loop
+        time_remaining -= possession_length
+        possession_flag = 1 - possession_flag
+
+        return possession_flag
+
         # if there's a turnover, credit the turnover, then flip possession and restart loop!
-        elif steal_turnover_success < team_turnover_chance:
+        if steal_turnover_success < team_turnover_chances:
             # who committed the turnover?
             turnover_player = turnover_probs.sample(
                 n=1, weights=turnover_probs.turnover_chance
@@ -544,7 +580,7 @@ def run_simulation(matchup_df, sample_size):
         # we're either crediting miss+block, or miss+block+rebound.
         # we also need to update and provide the given probability of
         # making it this far
-        given_probability = 1 - team_turnover_chance
+        given_probabilities = 1 - team_turnover_chances
         block_probs = block_distribution(
             possession_length,
             defensive_team,
@@ -1077,6 +1113,26 @@ def run_simulation(matchup_df, sample_size):
     }
 
 
+def event_sampler(rng, games_df, games_numpy):
+    event_array = np.array(
+            [
+                np.isin(
+                    games_numpy[x : x + 5, 2],
+                    rng.choice(
+                        games_numpy[x : x + 5, 2],
+                        size=1,
+                        replace=False,
+                        p=(
+                            games_numpy[0:5, 3] / games_numpy[0:5, 3].sum()
+                        ).astype(float),
+                    ),
+                )
+                for x in range(0, len(games_df), 5)
+            ]
+        ).flatten() * 1
+    return event_array
+
+
 def assist_distribution(
     possession_length, offensive_team, on_floor_df, tempo_factor, successful_shot_prob
 ):
@@ -1093,8 +1149,9 @@ def assist_distribution(
     )
     # now use rate parameter to calculate CDF per player, per possession.
     # x = the percentage of the team's gametime that has elapsed
+    # numpy array is expanded 5x so each player of the 5 on this side can get their time
     assist_probs["no_assist_chance_prior"] = np.e ** (
-        -1 * possession_length / assist_probs["assist_chance_exp_theta"]
+        -1 * np.repeat(possession_length, 5) / assist_probs["assist_chance_exp_theta"]
     )
     # we could also randomly sample an exponential for each player using numpy
     # and see if it's less than the number of possession_seconds. might be
@@ -1113,14 +1170,18 @@ def assist_distribution(
 
 
 def foul_distribution(
-    possession_length, defensive_team, on_floor_df, tempo_factor, attempted_shot_prob
+    possession_length, defensive_teams, on_floor_df, tempo_factor, attempted_shot_prob
 ):
     foul_fields = [
         "PersonalFouls",
         "Minutes",
         "sim_fouls",
     ]
-    foul_probs = on_floor_df.loc[[defensive_team], foul_fields]
+    # dropping the PlayerID level allows us to slice out only the teams on defense in each sim.
+    defensive_index = [(sim, team) for sim, team in enumerate(defensive_teams)]
+    foul_probs = on_floor_df.loc[
+        on_floor_df.index.droplevel("PlayerID").isin(defensive_index), foul_fields
+    ]
 
     # the x2 factor is still here for fouls, even though you can foul on offense or defense.
     # but for now this model is assuming you can only foul on defense. we would scrap
@@ -1136,8 +1197,9 @@ def foul_distribution(
     )
     # now use rate parameter to calculate CDF per player, per possession.
     # x = the percentage of the team's gametime that has elapsed
+    # numpy array is expanded 5x so each player of the 5 on this side can get their time
     foul_probs["no_foul_chance_prior"] = np.e ** (
-        -1 * possession_length / foul_probs["foul_chance_exp_theta"]
+        -1 * np.repeat(possession_length, 5) / foul_probs["foul_chance_exp_theta"]
     )
     # we could also randomly sample an exponential for each player using numpy
     # and see if it's less than the number of possession_seconds. might be
@@ -1154,10 +1216,14 @@ def foul_distribution(
 
 
 def block_distribution(
-    possession_length, defensive_team, on_floor_df, tempo_factor, no_turnover_prob
+    possession_length, defensive_teams, on_floor_df, tempo_factor, no_turnover_prob
 ):
     block_fields = ["BlockedShots", "Minutes", "sim_blocks"]
-    block_probs = on_floor_df.loc[[defensive_team], block_fields]
+    # dropping the PlayerID level allows us to slice out only the teams on defense in each sim.
+    defensive_index = [(sim, team) for sim, team in enumerate(defensive_teams)]
+    block_probs = on_floor_df.loc[
+        on_floor_df.index.droplevel("PlayerID").isin(defensive_index), block_fields
+    ]
 
     # let's try truly modeling as an exponential distribution.
     # first calculate rate parameter (1 / theta or beta), aka
@@ -1169,8 +1235,9 @@ def block_distribution(
     )
     # now use rate parameter to calculate CDF per player, per possession.
     # x = the percentage of the team's gametime that has elapsed
+    # numpy array is expanded 5x so each player of the 5 on this side can get their time
     block_probs["no_block_chance_prior"] = np.e ** (
-        -1 * possession_length / block_probs["block_chance_exp_theta"]
+        -1 * np.repeat(possession_length, 5) / block_probs["block_chance_exp_theta"]
     )
     # we could also randomly sample an exponential for each player using numpy
     # and see if it's less than the number of possession_seconds. might be
@@ -1186,7 +1253,7 @@ def block_distribution(
     return block_probs
 
 
-def identify_shooter(offensive_team, on_floor_df):
+def identify_shooter(offensive_teams, on_floor_df):
     shot_fields = [
         "two_attempt_chance",
         "two_chance",
@@ -1218,13 +1285,17 @@ def identify_shooter(offensive_team, on_floor_df):
     return shooting_player
 
 
-def steal_distribution(possession_length, defensive_team, on_floor_df, tempo_factor):
+def steal_distribution(possession_length, defensive_teams, on_floor_df, tempo_factor):
     steal_fields = [
         "Steals",
         "Minutes",
         "sim_steals",
     ]
-    steal_probs = on_floor_df.loc[[defensive_team], steal_fields]
+    # dropping the PlayerID level allows us to slice out only the teams on defense in each sim.
+    defensive_index = [(sim, team) for sim, team in enumerate(defensive_teams)]
+    steal_probs = on_floor_df.loc[
+        on_floor_df.index.droplevel("PlayerID").isin(defensive_index), steal_fields
+    ]
     # let's try truly modeling as an exponential distribution.
     # first calculate rate parameter (1 / theta or beta), aka
     # (1 / average amount of seconds between two events)
@@ -1235,8 +1306,9 @@ def steal_distribution(possession_length, defensive_team, on_floor_df, tempo_fac
     )
     # now use rate parameter to calculate CDF per player, per possession.
     # x = the percentage of the team's gametime that has elapsed
+    # numpy array is expanded 5x so each player of the 5 on this side can get their time
     steal_probs["no_steal_chance"] = np.e ** (
-        -1 * possession_length / steal_probs["steal_chance_exp_theta"]
+        -1 * np.repeat(possession_length, 5) / steal_probs["steal_chance_exp_theta"]
     )
     # we could also randomly sample an exponential for each player using numpy
     # and see if it's less than the number of possession_seconds. might be
@@ -1246,13 +1318,19 @@ def steal_distribution(possession_length, defensive_team, on_floor_df, tempo_fac
     return steal_probs
 
 
-def turnover_distribution(possession_length, offensive_team, on_floor_df, tempo_factor):
+def turnover_distribution(
+    possession_length, offensive_teams, on_floor_df, tempo_factor
+):
     turnover_fields = [
         "Turnovers",
         "Minutes",
         "sim_turnovers",
     ]
-    turnover_probs = on_floor_df.loc[[offensive_team], turnover_fields]
+    # dropping the PlayerID level allows us to slice out only the teams on offensive in each sim.
+    offensive_index = [(sim, team) for sim, team in enumerate(offensive_teams)]
+    turnover_probs = on_floor_df.loc[
+        on_floor_df.index.droplevel("PlayerID").isin(offensive_index), turnover_fields
+    ]
     # let's try truly modeling as an exponential distribution.
     # first calculate rate parameter (1 / theta or beta), aka
     # (1 / average amount of seconds between two events)
@@ -1266,8 +1344,11 @@ def turnover_distribution(possession_length, offensive_team, on_floor_df, tempo_
     )
     # now use rate parameter to calculate CDF per player, per possession.
     # x = the percentage of the team's gametime that has elapsed
+    # numpy array is expanded 5x so each player of the 5 on this side can get their time
     turnover_probs["no_turnover_chance"] = np.e ** (
-        -1 * possession_length / turnover_probs["turnover_chance_exp_theta"]
+        -1
+        * np.repeat(possession_length, 5)
+        / turnover_probs["turnover_chance_exp_theta"]
     )
     # we could also randomly sample an exponential for each player using numpy
     # and see if it's less than the number of possession_seconds. might be
@@ -1277,12 +1358,19 @@ def turnover_distribution(possession_length, offensive_team, on_floor_df, tempo_
     return turnover_probs
 
 
-def rebound_distribution(offensive_team, defensive_team, on_floor_df):
+def rebound_distribution(offensive_teams, defensive_teams, on_floor_df):
     off_reb_fields = ["OffensiveRebounds", "sim_offensive_rebounds"]
     def_reb_fields = ["DefensiveRebounds", "sim_defensive_rebounds"]
 
-    offensive_rebound_probs = on_floor_df.loc[[offensive_team], off_reb_fields]
-    defensive_rebound_probs = on_floor_df.loc[[defensive_team], def_reb_fields]
+    # dropping the PlayerID level allows us to slice out only the teams on each side in each sim.
+    offensive_index = [(sim, team) for sim, team in enumerate(offensive_teams)]
+    defensive_index = [(sim, team) for sim, team in enumerate(defensive_teams)]
+    offensive_rebound_probs = on_floor_df.loc[
+        on_floor_df.index.droplevel("PlayerID").isin(offensive_index), off_reb_fields
+    ]
+    defensive_rebound_probs = on_floor_df.loc[
+        on_floor_df.index.droplevel("PlayerID").isin(defensive_index), def_reb_fields
+    ]
 
     team_off_reb_total = offensive_rebound_probs.groupby(level=0).sum()
     team_def_reb_total = defensive_rebound_probs.groupby(level=0).sum()
