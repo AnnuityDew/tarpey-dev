@@ -478,9 +478,7 @@ def run_simulation(matchup_df, sample_size):
 
         # add the possession length to the time played for each individual on the floor and update.
         # numpy array is expanded 10x so each player of the 10 on the floor can get their time
-        on_floor_df["sim_seconds"] = on_floor_df["sim_seconds"] + np.repeat(
-            possession_length, 10
-        )
+        on_floor_df["sim_seconds"] += np.repeat(possession_length, 10)
         matchup_df.update(on_floor_df)
 
         # now, based on the 10 players on the floor, calculate probability of each event.
@@ -512,12 +510,13 @@ def run_simulation(matchup_df, sample_size):
         team_turnover_chances = (
             1 - turnover_probs.groupby(level=0).prod()["no_turnover_chance"].to_numpy()
         )
-        print("hi")
 
         # if there's a successful steal, credit the steal and turnover, then flip possession.
         # games with steals don't do anything else until the loop restarts for a new possession.
         successful_steals = steal_turnover_success < team_steal_chances
         steal_games = [sim for sim, value in enumerate(successful_steals) if value]
+        successful_turnovers = steal_turnover_success < team_turnover_chances
+        turnover_games = [sim for sim, value in enumerate(successful_turnovers) if value]
 
         # who got the steal in each game that had a steal?
         # pandas really needs to fix their groupby sampling...
@@ -528,31 +527,35 @@ def run_simulation(matchup_df, sample_size):
         # and tried to group from that as well.
         # for now we'll just have to keep sampling with numpy.
         # i'm really starting to wonder if it's because weights don't sum to one...
-
         steal_games_df = steal_probs.loc[steal_games]
         steal_games_numpy = steal_games_df.reset_index()[
             ["simulation", "Team", "PlayerID", "steal_chance"]
+        ].to_numpy()
+        turnover_games_df = turnover_probs.loc[turnover_games]
+        turnover_games_numpy = turnover_games_df.reset_index()[
+            ["simulation", "Team", "PlayerID", "turnover_chance"]
         ].to_numpy()
 
         # steal array has a 1 for the player in each steal game that got the steal
         # APPLY THIS EVENT SAMPLER TO THE OTHER EVENTS.
         steal_array = event_sampler(rng, steal_games_df, steal_games_numpy)
+        turnover_array = event_sampler(rng, turnover_games_df, turnover_games_numpy)
 
-        steal_games_df["sim_steals"] = steal_games_df["sim_steals"] + steal_array
+        steal_games_df["sim_steals"] += steal_array
+        turnover_games_df["sim_turnovers"] += turnover_array
         matchup_df.update(steal_games_df)
+        matchup_df.update(turnover_games_df)
 
-        print("below, first need to apply the event sampler to turnovers.")
         print("then, need to figure out the time remaining, possession length, and possession flag arrays.")
 
-        # who committed the turnover?
-        turnover_player = turnover_probs.sample(
-            n=1, weights=turnover_probs.turnover_chance
-        )
-        turnover_player["sim_turnovers"] = turnover_player["sim_turnovers"] + 1
-        matchup_df.update(turnover_player)
-
-        # change clock, give ball to other team, reset loop
-        time_remaining -= possession_length
+        # for games with a steal/turnover, give ball to other team and
+        # flag them as inactive until the loop resets.
+        # how do we do this? ndenumerate maybe?
+        # answer might be a second row in the possession flags array that populates
+        # based on the steal/turnover arrays. then, can do np.where to change
+        # the first row (1-first row) based on whether there's a true in the second row.
+        # third row could be the indicator for "don't do anything more with this game
+        # until the loop resets"
         possession_flag = 1 - possession_flag
 
         return possession_flag
@@ -1061,6 +1064,10 @@ def run_simulation(matchup_df, sample_size):
                         time_remaining -= possession_length
                         possession_flag = 1 - possession_flag
                         continue
+
+        # update clocks in all games, then restart the loop
+        time_remaining -= possession_length
+        continue
 
     # that's the end of the loop.
     # time to set up the box scores!

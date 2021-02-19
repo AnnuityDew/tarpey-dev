@@ -57,6 +57,9 @@ https://www.cloudcity.io/blog/2019/02/27/things-i-wish-they-told-me-about-multip
 https://stackoverflow.com/questions/20387510/proper-way-to-use-multiprocessor-pool-in-a-nested-loop
 https://stackoverflow.com/questions/38271547/when-should-we-call-multiprocessing-pool-join
 
+we'll never stop learning pandas
+https://stackoverflow.com/questions/53927460/select-rows-in-pandas-multiindex-dataframe
+
 licenses
 For autobracket, specifically the scatter plot:
 https://observablehq.com/@d3/brushable-scatterplot-matrix
