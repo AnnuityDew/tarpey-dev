@@ -59,6 +59,7 @@ https://stackoverflow.com/questions/38271547/when-should-we-call-multiprocessing
 
 we'll never stop learning pandas
 https://stackoverflow.com/questions/53927460/select-rows-in-pandas-multiindex-dataframe
+https://stackoverflow.com/questions/26046208/normalize-dataframe-by-group
 
 licenses
 For autobracket, specifically the scatter plot:
