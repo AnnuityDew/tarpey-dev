@@ -1,6 +1,7 @@
 # import native Python packages
 from datetime import date
 from enum import Enum
+from math import floor
 import multiprocessing
 from typing import Dict
 import orjson
@@ -240,7 +241,7 @@ async def full_game_simulation(
     season: FantasyDataSeason,
     away_team: str,
     home_team: str,
-    sample_size: int = Path(..., gt=0, le=20),
+    sample_size: int = Path(..., gt=0, le=1000),
     client: AsyncIOMotorClient = Depends(get_odm),
 ):
     # performance timer
@@ -349,12 +350,15 @@ def run_simulation(matchup_df, sample_size):
     matchup_list = team_minute_totals.index.to_list()
     # first row is who has the ball. second row indicates if possession will flip on
     # the next loop restart. third row makes a particular game "ineligible" for certain
-    # future events in the loop. fourth row puts a game into a rebound situation.
+    # future events in the loop (including when the game is over).
+    # fourth row puts a game into a rebound situation.
+    # fifth row puts a game into an assist situation.
     possession_status_array = np.array(
         [
             rng.integers(2, size=sample_size),
             np.zeros(sample_size),
             np.ones(sample_size),
+            np.zeros(sample_size),
             np.zeros(sample_size),
         ],
         dtype=np.int8,
@@ -363,9 +367,9 @@ def run_simulation(matchup_df, sample_size):
     # game clock array, shot clock reset array, initialize possession length array,
     # possession counter for each team for each simulation
     time_remaining = np.array([60.0 * 40 for x in range(sample_size)])
-    shot_clock_reset = np.ones(sample_size)
+    shot_clock_reset = np.ones(sample_size, dtype=np.int8)
     possession_length = np.zeros(sample_size)
-    total_possessions = np.zeros(sample_size)
+    total_possessions = np.zeros(sample_size, dtype=np.int16)
     tempo_factor = 1 / 1
 
     # need to think about this more, but for now avg. possession length 15 as a normal
@@ -385,6 +389,9 @@ def run_simulation(matchup_df, sample_size):
 
     # loop continues while any game is still ongoing
     while max(time_remaining) >= 0:
+        # if there was a shot clock reset, this will add a possession to that particular game
+        total_possessions += shot_clock_reset
+
         # who has the ball in each game?
         offensive_teams = [matchup_list[flag] for flag in possession_status_array[0, :]]
         defensive_teams = [
@@ -392,23 +399,21 @@ def run_simulation(matchup_df, sample_size):
         ]
 
         # split df into games with time remaining and games with no time remaining
-        ongoing_games = [sim for sim, value in enumerate(time_remaining) if value > 0]
+        # ongoing_games = [sim for sim, value in enumerate(time_remaining) if value > 0]
         games_to_resolve = [
-            sim for sim, value in enumerate(time_remaining) if value == 0
+            sim for sim, value in enumerate(time_remaining) if value <= 0
         ]
-        ongoing_games_df = matchup_df.loc[ongoing_games]
-        games_to_resolve_df = matchup_df.loc[games_to_resolve]
+        # ongoing_games_df = matchup_df.loc[ongoing_games]
+        # games_to_resolve_df = matchup_df.loc[games_to_resolve]
 
         # games to resolve might be over. calculate score and see if we need OT
-        games_to_resolve_df["sim_points"] = (
-            games_to_resolve_df["sim_free_throws_made"]
-            + (games_to_resolve_df["sim_two_pointers_made"] * 2)
-            + (games_to_resolve_df["sim_three_pointers_made"] * 3)
+        matchup_df["sim_points"] = (
+            matchup_df["sim_free_throws_made"]
+            + (matchup_df["sim_two_pointers_made"] * 2)
+            + (matchup_df["sim_three_pointers_made"] * 3)
         )
         # aggregate team box score
-        team_scores_df = games_to_resolve_df.groupby(level=[0, 1]).agg(
-            {"sim_points": "sum"}
-        )
+        team_scores_df = matchup_df.groupby(level=[0, 1]).agg({"sim_points": "sum"})
 
         # compare score for each game to resolve. if tied, start overtime for that game
         for sim in games_to_resolve:
@@ -418,12 +423,14 @@ def run_simulation(matchup_df, sample_size):
             ):
                 # start a 5 minute overtime!
                 time_remaining[sim] = 60 * 5
+            else:
+                # game over array. this will prevent further simulation of a particular game
+                possession_status_array[2, sim] = 0
+                shot_clock_reset[sim] = 0
 
-        # this is where a check will go to end the loop if every game is resolved.
-        print("this code is currently missing! need to check for end of all games.")
-
-        # if there was a shot clock reset, this will add a possession to that particular game
-        total_possessions += shot_clock_reset
+        # if there's no time left in any game, the loop ends.
+        if time_remaining.sum() == 0:
+            break
 
         # if there was a shot clock reset, we want to use the value from this array of fresh
         # random numbers from the normal distribution. otherwise, use a squished distribution
@@ -434,8 +441,8 @@ def run_simulation(matchup_df, sample_size):
             loc=possession_length_mean, scale=possession_length_stdev, size=sample_size
         )
         recycled_possession_length = rng.normal(
-            loc=possession_length_mean * (30 - possession_length / 30),
-            scale=possession_length_stdev * (30 - possession_length / 30),
+            loc=possession_length_mean * ((30 - possession_length) / 30),
+            scale=possession_length_stdev * ((30 - possession_length) / 30),
             size=sample_size,
         )
         # determine whether or not we should use the fresh possession or recycled in each game.
@@ -445,11 +452,12 @@ def run_simulation(matchup_df, sample_size):
 
         # now add the two together to get the new possession length for each game
         # will either look like x+0 or 0+x for each row
-        possession_length = fresh_possession_length + recycled_possession_length
-
-        # expect another shot clock reset in the next possession by default
-        # (we overwrite this once an event occurs, if necessary)
-        shot_clock_reset = np.ones(sample_size)
+        # cap the distribution at 29 seconds, so recycled distribution doesn't blow up
+        # with a negative scale parameter
+        possession_length = np.minimum(
+            np.minimum((fresh_possession_length + recycled_possession_length), 29),
+            time_remaining,
+        )
 
         # pick 10 players for the current possession based on average time share
         # pandas has a bug so we're doing this with numpy now.
@@ -526,9 +534,13 @@ def run_simulation(matchup_df, sample_size):
 
         # if there's a successful steal, credit the steal and turnover, then flip possession.
         # games with steals don't do anything else until the loop restarts for a new possession.
-        successful_steals = steal_turnover_success < team_steal_chances
+        successful_steals = (
+            steal_turnover_success < team_steal_chances
+        ) * possession_status_array[2, :]
         steal_games = [sim for sim, value in enumerate(successful_steals) if value]
-        successful_turnovers = steal_turnover_success < team_turnover_chances
+        successful_turnovers = (
+            steal_turnover_success < team_turnover_chances
+        ) * possession_status_array[2, :]
         turnover_games = [
             sim for sim, value in enumerate(successful_turnovers) if value
         ]
@@ -566,6 +578,64 @@ def run_simulation(matchup_df, sample_size):
         # update third row to indicate end of loop for this game
         np.put(possession_status_array[2, :], turnover_games, 0)
 
+        # if we've made it this far, there could be a non-shooting foul.
+        # let's do foul logic here so we can be ready for both types
+        # of fouls later. (no offensive fouls for now)
+        # we also need to update and provide the given probability of
+        # making it this far
+        given_probabilities = 1 - team_turnover_chances
+        foul_probs = foul_distribution(
+            possession_length,
+            defensive_teams,
+            on_floor_df,
+            tempo_factor,
+            given_probabilities,
+        )
+
+        # defensive foul check! (potential improvement, adding offensive fouls and
+        # non-shooting fouls)
+        foul_occurred_rng = rng.random(size=sample_size)
+        team_foul_chances = (
+            1 - foul_probs.groupby(level=0).prod()["no_foul_chance"].to_numpy()
+        )
+
+        # fouls can't occur in games that are done with their loop.
+        foul_occurrences = (
+            foul_occurred_rng < team_foul_chances
+        ) * possession_status_array[2, :]
+        foul_games = [sim for sim, value in enumerate(foul_occurrences) if value]
+        foul_games_df = foul_probs.loc[foul_games]
+        foul_games_numpy = foul_games_df.reset_index()[
+            ["simulation", "Team", "PlayerID", "foul_chance"]
+        ].to_numpy()
+
+        foul_array = event_sampler(rng, foul_games_df, foul_games_numpy)
+        foul_games_df["sim_fouls"] += foul_array
+        matchup_df.update(foul_games_df)
+
+        # extra check here for games where it was a non-shooting foul (50/50 for now)
+        non_shooting_foul_check = rng.integers(2, size=sample_size)
+        # set allows us to check for a subset of foul games that were non-shooting fouls
+        non_shooting_foul_games = list(
+            set(foul_games).intersection(
+                [sim for sim, value in enumerate(non_shooting_foul_check) if value]
+            )
+        )
+        # we also need the list of shooting foul games so we can zero out the shot attempt and
+        # not put the game into a rebound situation
+        shooting_foul_games = list(
+            set(foul_games).intersection(
+                [sim for sim, value in enumerate(non_shooting_foul_check) if not value]
+            )
+        )
+        # non-shooting foul games are marked ineligible for future events. next thing
+        # for them will be a loop restart without change of possession.
+        np.put(possession_status_array[2, :], non_shooting_foul_games, 0)
+        # also need a separate array to identify shooting fouls so we can calculate # of free throws
+        shooting_foul_occurrences = foul_occurrences
+        np.put(shooting_foul_occurrences, non_shooting_foul_games, 0)
+        shooting_foul_occurrences = np.repeat(shooting_foul_occurrences, 5)
+
         # time to model shot attempts. if there's no steal or turnover,
         # a shot is the only other outcome, so we can simply model who's
         # gonna take it and what kind of shot it will be.
@@ -577,7 +647,11 @@ def run_simulation(matchup_df, sample_size):
         ].to_numpy()
         # multiply shooter array by possession status array expanded.
         # shot can't happen this possession in a game that had a steal/turnover
-        shooter_array = event_sampler(rng, shot_probs, shot_games_numpy) * np.repeat(
+        # the "prior_shooter_array" is so later prior arrays don't break because
+        # we filtered out some of the shooters that didn't get to shoot because
+        # of a turnover
+        prior_shooter_array = event_sampler(rng, shot_probs, shot_games_numpy)
+        shooter_array = prior_shooter_array * np.repeat(
             possession_status_array[2, :], 5
         )
         two_chance_array = shot_probs.two_attempt_chance.to_numpy()
@@ -585,9 +659,6 @@ def run_simulation(matchup_df, sample_size):
         # if a defensive player blocks, 50/50 chance to be a rebound.
         # using blocks per second over the season.
         # we're either crediting miss+block, or miss+block+rebound.
-        # we also need to update and provide the given probability of
-        # making it this far
-        given_probabilities = 1 - team_turnover_chances
         block_probs = block_distribution(
             possession_length,
             defensive_teams,
@@ -597,7 +668,7 @@ def run_simulation(matchup_df, sample_size):
         )
 
         # block check!
-        block_success = rng.random(size=sample_size)
+        block_success_rng = rng.random(size=sample_size)
         team_block_chances = (
             1 - block_probs.groupby(level=0).prod()["no_block_chance"].to_numpy()
         )
@@ -605,7 +676,7 @@ def run_simulation(matchup_df, sample_size):
         # successful block can't happen in games that are done with their loop.
         # need to zero those out.
         successful_blocks = (
-            block_success < team_block_chances
+            block_success_rng < team_block_chances
         ) * possession_status_array[2, :]
         block_games = [sim for sim, value in enumerate(successful_blocks) if value]
         block_games_df = block_probs.loc[block_games]
@@ -622,19 +693,25 @@ def run_simulation(matchup_df, sample_size):
 
         # extra check here for games where the block went out of bounds
         block_inb_check = rng.integers(2, size=sample_size)
-        # set allows us to check for a subset of block games that were blocks inb
+        # set allows us to check for a subset of block games that were blocks inb/oob
         block_inb_games = list(
             set(block_games).intersection(
                 [sim for sim, value in enumerate(block_inb_check) if value]
             )
         )
-
+        block_oob_games = list(
+            set(block_games).intersection(
+                [sim for sim, value in enumerate(block_inb_check) if not value]
+            )
+        )
         # the shot type check! we check shot type on a player basis, so need to expand the array x5
-        two_or_three = np.repeat(rng.random(size=sample_size), 5)
-        # array of twos, threes, and zeroes (nonshooters)
-        attempted_shot_array = (
-            (two_or_three < two_chance_array) * 1 + 2
-        ) * shooter_array
+        two_or_three_rng = np.repeat(rng.random(size=sample_size), 5)
+        # array of 2s, 3s, and 0s (includes those who would have shot if there wasn't a turnover)
+        prior_attempted_shot_array = (
+            (two_or_three_rng > two_chance_array) * 1 + 2
+        ) * prior_shooter_array
+        # filter out turnovers this possession to make this just who actually shot the ball
+        attempted_shot_array = prior_attempted_shot_array * shooter_array
 
         # all block games are marked ineligible for future events. next thing
         # for most of them will be a loop restart.
@@ -647,71 +724,6 @@ def run_simulation(matchup_df, sample_size):
         three_attempt_array = np.where(attempted_shot_array == 3, 1, 0)
         shot_probs["sim_two_pointers_attempted"] += two_attempt_array
         shot_probs["sim_three_pointers_attempted"] += three_attempt_array
-        matchup_df.update(shot_probs)
-
-        print("Verify rebound logic working correctly on the backend of the loop.")
-        print("Scenarios where we weren't resetting shot clock: block OOB, offensive rebound, nonshooting foul")
-        if False:
-
-            if two_or_three < shooting_player.two_attempt_chance.values[0]:
-                # credit the shooter with a 2pt attempt
-                shooting_player["sim_two_pointers_attempted"] = (
-                    shooting_player["sim_two_pointers_attempted"] + 1
-                )
-            else:
-                # credit the shooter with a 3pt attempt
-                shooting_player["sim_three_pointers_attempted"] = (
-                    shooting_player["sim_three_pointers_attempted"] + 1
-                )
-            matchup_df.update(shooting_player)
-
-            # block out of bounds check! this is 50/50 for now.
-            block_oob_check = rng.integers(2, size=1)[0]
-
-            if block_oob_check == 1:
-                # no change of possession, don't reset shot clock
-                time_remaining -= possession_length
-                shot_clock_reset = not shot_clock_reset
-                continue
-            else:
-                # rebound logic
-                (
-                    offensive_rebound_probs,
-                    defensive_rebound_probs,
-                    off_reb_chance,
-                ) = rebound_distribution(offensive_team, defensive_team, on_floor_df)
-
-                # rebound type check!
-                off_reb_success = rng.random()
-
-                if off_reb_success < off_reb_chance:
-                    # who got the rebound?
-                    rebounding_player = offensive_rebound_probs.sample(
-                        n=1, weights=offensive_rebound_probs.off_reb_pdf
-                    )
-                    rebounding_player["sim_offensive_rebounds"] = (
-                        rebounding_player["sim_offensive_rebounds"] + 1
-                    )
-                    matchup_df.update(rebounding_player)
-
-                    # no change of possession, don't reset shot clock
-                    time_remaining -= possession_length
-                    shot_clock_reset = not shot_clock_reset
-                    continue
-                else:
-                    # who got the rebound?
-                    rebounding_player = defensive_rebound_probs.sample(
-                        n=1, weights=defensive_rebound_probs.def_reb_pdf
-                    )
-                    rebounding_player["sim_defensive_rebounds"] = (
-                        rebounding_player["sim_defensive_rebounds"] + 1
-                    )
-                    matchup_df.update(rebounding_player)
-
-                    # update clock, change of possession, reset loop
-                    time_remaining -= possession_length
-                    possession_flag = 1 - possession_flag
-                    continue
 
         # we need to prep for assist and foul calculation here. will involve Bayes,
         # so we need the components for probability of a successful shot
@@ -721,410 +733,203 @@ def run_simulation(matchup_df, sample_size):
         # happens in this model, a block will not because the loop restarts)
         given_probabilities = given_probabilities * (1 - team_block_chances)
 
-        # if we've made it this far, the shot was not blocked.
-        # but did it go in? and was there a foul?
-        foul_probs = foul_distribution(
+        # time to see if the shots went in. this is a player check so expand array 5x
+        shot_success_rng = np.repeat(rng.random(size=sample_size), 5)
+        # successful shots can't happen in games that are done with their loop.
+        successful_twos = (
+            two_attempt_array
+            * (shot_success_rng < shot_probs["two_chance"].to_numpy())
+            * np.repeat(possession_status_array[2, :], 5)
+        )
+        successful_threes = (
+            three_attempt_array
+            * (shot_success_rng < shot_probs["three_chance"].to_numpy())
+            * np.repeat(possession_status_array[2, :], 5)
+        )
+        shot_probs["sim_two_pointers_made"] += successful_twos
+        shot_probs["sim_three_pointers_made"] += successful_threes
+
+        # this array will be 1 if there was a successful shot and a shooting foul."
+        and_one_array = (shooting_foul_occurrences * successful_twos) + (
+            shooting_foul_occurrences * successful_threes
+        )
+        two_fts_array = (
+            shooting_foul_occurrences * (two_attempt_array - successful_twos)
+        ) * 2
+        three_fts_array = (
+            shooting_foul_occurrences * (three_attempt_array - successful_threes)
+        ) * 3
+        ft_binomial_n = and_one_array + two_fts_array + three_fts_array
+        made_ft_array = rng.binomial(
+            n=ft_binomial_n,
+            p=shot_probs["ft_chance"].to_numpy(),
+        )
+
+        shot_probs["sim_free_throws_attempted"] += ft_binomial_n
+        shot_probs["sim_free_throws_made"] += made_ft_array
+
+        # for made shots, update row 2 to flip possession for the next loop restart.
+        # update row 5 because we will check for an assist.
+        successful_shots = successful_twos + successful_threes
+        successful_shot_games = [
+            floor(sim / 5) for sim, value in enumerate(successful_shots) if value
+        ]
+        np.put(possession_status_array[1, :], successful_shot_games, 1)
+        np.put(possession_status_array[4, :], successful_shot_games, 1)
+
+        # for missed shots, update row three to mark game "ineligible" for future loop events
+        # don't think this is even necessary though. update row four to put game into a rebound
+        # situation.
+        missed_shots = (two_attempt_array - successful_twos) + (
+            three_attempt_array - successful_threes
+        )
+        missed_shot_games = [
+            floor(sim / 5) for sim, value in enumerate(missed_shots) if value
+        ]
+        np.put(possession_status_array[2, :], missed_shot_games, 0)
+        np.put(possession_status_array[3, :], missed_shot_games, 1)
+        # extra array change here for games with a block that went out of bounds.
+        # they can't go to a rebound situation
+        np.put(possession_status_array[3, :], block_oob_games, 0)
+        # extra array change here for games with a shooting foul. they can't go to a rebound situation
+        # and for now we're assuming a change of possession, although at some point we'll need to add
+        # rebound situation for missing the last free throw
+        np.put(possession_status_array[3, :], shooting_foul_games, 0)
+        np.put(possession_status_array[1, :], shooting_foul_games, 1)
+        # we also need to subtract off the shot attempt if the missed shot was because of a shooting foul
+        fouled_on_missed_two = np.zeros(sample_size, dtype=np.int8)
+        np.put(fouled_on_missed_two, shooting_foul_games, 1)
+        fouled_on_missed_two = (
+            two_attempt_array * np.repeat(fouled_on_missed_two, 5) * missed_shots
+        )
+        fouled_on_missed_three = np.zeros(sample_size, dtype=np.int8)
+        np.put(fouled_on_missed_three, shooting_foul_games, 1)
+        fouled_on_missed_three = (
+            three_attempt_array * np.repeat(fouled_on_missed_three, 5) * missed_shots
+        )
+        shot_probs["sim_two_pointers_attempted"] -= fouled_on_missed_two
+        shot_probs["sim_three_pointers_attempted"] -= fouled_on_missed_three
+
+        # update all shots attempted and made in the possession here!
+        matchup_df.update(shot_probs)
+
+        # time for assist logic. update given probabilities first.
+        # the prior prob is a little different depending on whether a two or three was made
+        shot_probs["attempted_shot_this_loop"] = prior_attempted_shot_array
+        shot_probs["shot_success_this_loop"] = 0
+        shot_probs.loc[
+            shot_probs.attempted_shot_this_loop == 2, "shot_success_this_loop"
+        ] = shot_probs.loc[shot_probs.attempted_shot_this_loop == 2, "two_chance"]
+        shot_probs.loc[
+            shot_probs.attempted_shot_this_loop == 3, "shot_success_this_loop"
+        ] = shot_probs.loc[shot_probs.attempted_shot_this_loop == 3, "three_chance"]
+        prior_made_shot_probs = shot_probs.loc[
+            shot_probs.attempted_shot_this_loop > 0, "shot_success_this_loop"
+        ].to_numpy()
+
+        # start with assist logic after including prior probabilities
+        given_probabilities = given_probabilities * prior_made_shot_probs
+
+        assist_probs = assist_distribution(
             possession_length,
-            defensive_teams,
+            offensive_teams,
             on_floor_df,
             tempo_factor,
-            given_probability,
+            given_probabilities,
         )
-
-        # defensive foul check! (potential improvement, adding offensive fouls and
-        # non-shooting fouls)
-        foul_occurred = rng.random(size=sample_size)
-        team_foul_chances = (
-            1 - foul_probs.groupby(level=0).prod()["no_foul_chance"].to_numpy()
+        assist_success_rng = rng.random(size=sample_size)
+        team_assist_chances = (
+            1 - assist_probs.groupby(level=0).prod()["no_assist_chance"].to_numpy()
         )
+        # successful assists can only happen in games with successful shots
+        successful_assists = (
+            assist_success_rng < team_assist_chances
+        ) * possession_status_array[4, :]
+        assist_games = [sim for sim, value in enumerate(successful_assists) if value]
+        assist_games_df = assist_probs.loc[assist_games]
+        assist_games_numpy = assist_games_df.reset_index()[
+            ["simulation", "Team", "PlayerID", "assist_chance"]
+        ].to_numpy()
 
-        # non shooting foul check! this is 50/50 for now.
-        if foul_occurred < team_foul_chance:
-            non_shooting_foul_check = rng.integers(2, size=1)[0]
+        assist_array = event_sampler(rng, assist_games_df, assist_games_numpy)
+        assist_games_df["sim_assists"] += assist_array
+        # add assists to the box score
+        matchup_df.update(assist_games_df)
 
-            if non_shooting_foul_check == 1:
-                # no change of possession. credit a non-shooting foul.
-                # make a new possession
-                fouling_player = foul_probs.sample(n=1, weights=foul_probs.foul_chance)
-                fouling_player["sim_fouls"] = fouling_player["sim_fouls"] + 1
-                matchup_df.update(fouling_player)
+        # finally, need to decide rebound situations. who gets the rebound?
+        (
+            offensive_rebound_probs,
+            defensive_rebound_probs,
+            off_reb_chances,
+        ) = rebound_distribution(offensive_teams, defensive_teams, on_floor_df)
 
-                time_remaining -= possession_length
-                shot_clock_reset = not shot_clock_reset
-                continue
+        # rebound type check!
+        off_reb_rng = rng.random(size=sample_size)
+        team_off_reb_chances = off_reb_chances.groupby(level=0).max().to_numpy()
 
-        if two_or_three < shooting_player.two_attempt_chance.values[0]:
-            # check two point probability
-            two_success = rng.random()
-            made_two_chance = shooting_player.two_chance.values[0]
+        # successful rebound can't happen in games that didn't go to a rebound situation.
+        successful_off_rebs = (
+            off_reb_rng < team_off_reb_chances
+        ) * possession_status_array[3, :]
+        successful_def_rebs = (
+            off_reb_rng >= team_off_reb_chances
+        ) * possession_status_array[3, :]
 
-            if two_success < made_two_chance:
-                # credit the shooter with a 2pt attempt and make
-                shooting_player["sim_two_pointers_attempted"] = (
-                    shooting_player["sim_two_pointers_attempted"] + 1
-                )
-                shooting_player["sim_two_pointers_made"] = (
-                    shooting_player["sim_two_pointers_made"] + 1
-                )
-                if foul_occurred < team_foul_chance:
-                    # and-1! first, credit the foul
-                    fouling_player = foul_probs.sample(
-                        n=1, weights=foul_probs.foul_chance
-                    )
-                    fouling_player["sim_fouls"] = fouling_player["sim_fouls"] + 1
-                    matchup_df.update(fouling_player)
+        off_reb_games = [sim for sim, value in enumerate(successful_off_rebs) if value]
+        def_reb_games = [sim for sim, value in enumerate(successful_def_rebs) if value]
 
-                    # credit the free throw attempt
-                    shooting_player["sim_free_throws_attempted"] = (
-                        shooting_player["sim_free_throws_attempted"] + 1
-                    )
+        # for games with a defensive rebound, need to indicate change of possession for next loop
+        np.put(possession_status_array[1, :], def_reb_games, 1)
 
-                    # now simulate free throw success
-                    ft_success_and_1 = rng.random()
-                    if ft_success_and_1 < shooting_player.ft_chance.values[0]:
-                        shooting_player["sim_free_throws_made"] = (
-                            shooting_player["sim_free_throws_made"] + 1
-                        )
+        off_reb_games_df = offensive_rebound_probs.loc[off_reb_games]
+        def_reb_games_df = defensive_rebound_probs.loc[def_reb_games]
+        off_reb_games_numpy = off_reb_games_df.reset_index()[
+            ["simulation", "Team", "PlayerID", "off_reb_share"]
+        ].to_numpy()
+        def_reb_games_numpy = def_reb_games_df.reset_index()[
+            ["simulation", "Team", "PlayerID", "def_reb_share"]
+        ].to_numpy()
 
-                matchup_df.update(shooting_player)
+        # sample who got the offensive or defensive rebound in each game, then add to box score
+        off_reb_array = event_sampler(rng, off_reb_games_df, off_reb_games_numpy)
+        def_reb_array = event_sampler(rng, def_reb_games_df, def_reb_games_numpy)
+        off_reb_games_df["sim_offensive_rebounds"] += off_reb_array
+        def_reb_games_df["sim_defensive_rebounds"] += def_reb_array
+        matchup_df.update(off_reb_games_df)
+        matchup_df.update(def_reb_games_df)
 
-                # assist logic after a made shot. who assisted it if anyone?
-                given_probability = given_probability * made_two_chance
-                assist_probs = assist_distribution(
-                    possession_length,
-                    offensive_team,
-                    on_floor_df,
-                    tempo_factor,
-                    given_probability,
-                )
-
-                # assist check!
-                assist_success = rng.random()
-                team_assist_chance = 1 - assist_probs.no_assist_chance.product()
-
-                if assist_success < team_assist_chance:
-                    # who got the assist?
-                    assisting_player = assist_probs.sample(
-                        n=1, weights=assist_probs.assist_chance
-                    )
-                    assisting_player["sim_assists"] = (
-                        assisting_player["sim_assists"] + 1
-                    )
-                    matchup_df.update(assisting_player)
-
-                # change clock, give ball to other team, reset loop
-                time_remaining -= possession_length
-                possession_flag = 1 - possession_flag
-                continue
-
-            else:
-                if foul_occurred < team_foul_chance:
-                    # if fouled, two FTs, and shooter is NOT credited with a missed shot
-                    fouling_player = foul_probs.sample(
-                        n=1, weights=foul_probs.foul_chance
-                    )
-                    fouling_player["sim_fouls"] = fouling_player["sim_fouls"] + 1
-                    matchup_df.update(fouling_player)
-
-                    # credit the free throw attempts
-                    shooting_player["sim_free_throws_attempted"] = (
-                        shooting_player["sim_free_throws_attempted"] + 2
-                    )
-
-                    # now simulate free throw success
-                    ft_success_shot_1 = rng.random()
-                    ft_success_shot_2 = rng.random()
-                    for ft_success in [ft_success_shot_1, ft_success_shot_2]:
-                        if ft_success < shooting_player.ft_chance.values[0]:
-                            shooting_player["sim_free_throws_made"] = (
-                                shooting_player["sim_free_throws_made"] + 1
-                            )
-                    matchup_df.update(shooting_player)
-                    # if the last free throw is made, turn the ball over.
-                    if ft_success_shot_2 < shooting_player.ft_chance.values[0]:
-                        time_remaining -= possession_length
-                        possession_flag = 1 - possession_flag
-                        continue
-                    # if the last free throw is missed, it's a rebound situation!
-                    else:
-                        # who gets the rebound?
-                        (
-                            offensive_rebound_probs,
-                            defensive_rebound_probs,
-                            off_reb_chance,
-                        ) = rebound_distribution(
-                            offensive_team, defensive_team, on_floor_df
-                        )
-
-                        # rebound type check!
-                        off_reb_success = rng.random()
-
-                        if off_reb_success < off_reb_chance:
-                            # who got the rebound?
-                            rebounding_player = offensive_rebound_probs.sample(
-                                n=1, weights=offensive_rebound_probs.off_reb_pdf
-                            )
-                            rebounding_player["sim_offensive_rebounds"] = (
-                                rebounding_player["sim_offensive_rebounds"] + 1
-                            )
-                            matchup_df.update(rebounding_player)
-
-                            # no change of possession, don't reset shot clock
-                            time_remaining -= possession_length
-                            shot_clock_reset = not shot_clock_reset
-                            continue
-                        else:
-                            # who got the rebound?
-                            rebounding_player = defensive_rebound_probs.sample(
-                                n=1, weights=defensive_rebound_probs.def_reb_pdf
-                            )
-                            rebounding_player["sim_defensive_rebounds"] = (
-                                rebounding_player["sim_defensive_rebounds"] + 1
-                            )
-                            matchup_df.update(rebounding_player)
-
-                            # update clock, change of possession, reset loop
-                            time_remaining -= possession_length
-                            possession_flag = 1 - possession_flag
-                            continue
-                else:
-                    shooting_player["sim_two_pointers_attempted"] = (
-                        shooting_player["sim_two_pointers_attempted"] + 1
-                    )
-                    matchup_df.update(shooting_player)
-
-                    # who gets the rebound?
-                    (
-                        offensive_rebound_probs,
-                        defensive_rebound_probs,
-                        off_reb_chance,
-                    ) = rebound_distribution(
-                        offensive_team, defensive_team, on_floor_df
-                    )
-
-                    # rebound type check!
-                    off_reb_success = rng.random()
-
-                    if off_reb_success < off_reb_chance:
-                        # who got the rebound?
-                        rebounding_player = offensive_rebound_probs.sample(
-                            n=1, weights=offensive_rebound_probs.off_reb_pdf
-                        )
-                        rebounding_player["sim_offensive_rebounds"] = (
-                            rebounding_player["sim_offensive_rebounds"] + 1
-                        )
-                        matchup_df.update(rebounding_player)
-
-                        # no change of possession, don't reset shot clock
-                        time_remaining -= possession_length
-                        shot_clock_reset = not shot_clock_reset
-                        continue
-                    else:
-                        # who got the rebound?
-                        rebounding_player = defensive_rebound_probs.sample(
-                            n=1, weights=defensive_rebound_probs.def_reb_pdf
-                        )
-                        rebounding_player["sim_defensive_rebounds"] = (
-                            rebounding_player["sim_defensive_rebounds"] + 1
-                        )
-                        matchup_df.update(rebounding_player)
-
-                        # update clock, change of possession, reset loop
-                        time_remaining -= possession_length
-                        possession_flag = 1 - possession_flag
-                        continue
-
-        else:
-            # check three point probability
-            three_success = rng.random()
-            made_three_chance = shooting_player.three_chance.values[0]
-
-            if three_success < shooting_player.three_chance.values[0]:
-                # credit the shooter with a 2pt attempt and make
-                shooting_player["sim_three_pointers_attempted"] = (
-                    shooting_player["sim_three_pointers_attempted"] + 1
-                )
-                shooting_player["sim_three_pointers_made"] = (
-                    shooting_player["sim_three_pointers_made"] + 1
-                )
-                if foul_occurred < team_foul_chance:
-                    # and-1! first, credit the foul
-                    fouling_player = foul_probs.sample(
-                        n=1, weights=foul_probs.foul_chance
-                    )
-                    fouling_player["sim_fouls"] = fouling_player["sim_fouls"] + 1
-                    matchup_df.update(fouling_player)
-
-                    # credit the free throw attempt
-                    shooting_player["sim_free_throws_attempted"] = (
-                        shooting_player["sim_free_throws_attempted"] + 1
-                    )
-
-                    # now simulate free throw success
-                    ft_success_and_1 = rng.random()
-                    if ft_success_and_1 < shooting_player.ft_chance.values[0]:
-                        shooting_player["sim_free_throws_made"] = (
-                            shooting_player["sim_free_throws_made"] + 1
-                        )
-
-                matchup_df.update(shooting_player)
-
-                # assist logic after a made shot. who assisted it if anyone?
-                given_probability = given_probability * made_three_chance
-                assist_probs = assist_distribution(
-                    possession_length,
-                    offensive_team,
-                    on_floor_df,
-                    tempo_factor,
-                    given_probability,
-                )
-
-                # assist check!
-                assist_success = rng.random()
-                team_assist_chance = 1 - assist_probs.no_assist_chance.product()
-
-                if assist_success < team_assist_chance:
-                    # who got the assist?
-                    assisting_player = assist_probs.sample(
-                        n=1, weights=assist_probs.assist_chance
-                    )
-                    assisting_player["sim_assists"] = (
-                        assisting_player["sim_assists"] + 1
-                    )
-                    matchup_df.update(assisting_player)
-
-                # change clock, give ball to other team, reset loop
-                time_remaining -= possession_length
-                possession_flag = 1 - possession_flag
-                continue
-
-            else:
-                if foul_occurred < team_foul_chance:
-                    # if fouled, three FTs, and shooter is NOT credited with a missed shot
-                    fouling_player = foul_probs.sample(
-                        n=1, weights=foul_probs.foul_chance
-                    )
-                    fouling_player["sim_fouls"] = fouling_player["sim_fouls"] + 1
-                    matchup_df.update(fouling_player)
-
-                    # credit the free throw attempts
-                    shooting_player["sim_free_throws_attempted"] = (
-                        shooting_player["sim_free_throws_attempted"] + 3
-                    )
-
-                    # now simulate free throw success
-                    ft_success_shot_1 = rng.random()
-                    ft_success_shot_2 = rng.random()
-                    for ft_success in [ft_success_shot_1, ft_success_shot_2]:
-                        if ft_success < shooting_player.ft_chance.values[0]:
-                            shooting_player["sim_free_throws_made"] = (
-                                shooting_player["sim_free_throws_made"] + 1
-                            )
-                    matchup_df.update(shooting_player)
-                    # if the last free throw is made, turn the ball over.
-                    if ft_success_shot_2 < shooting_player.ft_chance.values[0]:
-                        time_remaining -= possession_length
-                        possession_flag = 1 - possession_flag
-                        continue
-                    # if the last free throw is missed, it's a rebound situation!
-                    else:
-                        # who gets the rebound?
-                        (
-                            offensive_rebound_probs,
-                            defensive_rebound_probs,
-                            off_reb_chance,
-                        ) = rebound_distribution(
-                            offensive_team, defensive_team, on_floor_df
-                        )
-
-                        # rebound type check!
-                        off_reb_success = rng.random()
-
-                        if off_reb_success < off_reb_chance:
-                            # who got the rebound?
-                            rebounding_player = offensive_rebound_probs.sample(
-                                n=1, weights=offensive_rebound_probs.off_reb_pdf
-                            )
-                            rebounding_player["sim_offensive_rebounds"] = (
-                                rebounding_player["sim_offensive_rebounds"] + 1
-                            )
-                            matchup_df.update(rebounding_player)
-
-                            # no change of possession, don't reset shot clock
-                            time_remaining -= possession_length
-                            shot_clock_reset = not shot_clock_reset
-                            continue
-                        else:
-                            # who got the rebound?
-                            rebounding_player = defensive_rebound_probs.sample(
-                                n=1, weights=defensive_rebound_probs.def_reb_pdf
-                            )
-                            rebounding_player["sim_defensive_rebounds"] = (
-                                rebounding_player["sim_defensive_rebounds"] + 1
-                            )
-                            matchup_df.update(rebounding_player)
-
-                            # update clock, change of possession, reset loop
-                            time_remaining -= possession_length
-                            possession_flag = 1 - possession_flag
-                            continue
-                else:
-                    shooting_player["sim_three_pointers_attempted"] = (
-                        shooting_player["sim_three_pointers_attempted"] + 1
-                    )
-                    matchup_df.update(shooting_player)
-
-                    # who gets the rebound?
-                    (
-                        offensive_rebound_probs,
-                        defensive_rebound_probs,
-                        off_reb_chance,
-                    ) = rebound_distribution(
-                        offensive_team, defensive_team, on_floor_df
-                    )
-
-                    # rebound type check!
-                    off_reb_success = rng.random()
-
-                    if off_reb_success < off_reb_chance:
-                        # who got the rebound?
-                        rebounding_player = offensive_rebound_probs.sample(
-                            n=1, weights=offensive_rebound_probs.off_reb_pdf
-                        )
-                        rebounding_player["sim_offensive_rebounds"] = (
-                            rebounding_player["sim_offensive_rebounds"] + 1
-                        )
-                        matchup_df.update(rebounding_player)
-
-                        # no change of possession, don't reset shot clock
-                        time_remaining -= possession_length
-                        shot_clock_reset = not shot_clock_reset
-                        continue
-                    else:
-                        # who got the rebound?
-                        rebounding_player = defensive_rebound_probs.sample(
-                            n=1, weights=defensive_rebound_probs.def_reb_pdf
-                        )
-                        rebounding_player["sim_defensive_rebounds"] = (
-                            rebounding_player["sim_defensive_rebounds"] + 1
-                        )
-                        matchup_df.update(rebounding_player)
-
-                        # update clock, change of possession, reset loop
-                        time_remaining -= possession_length
-                        possession_flag = 1 - possession_flag
-                        continue
-
+        print("steal games" + str(steal_games))
+        print("turnover games" + str(turnover_games))
+        print("block games" + str(block_games))
+        print("block inbounds games" + str(block_inb_games))
+        print("block out of bounds games" + str(block_oob_games))
+        print("successful shot games" + str(successful_shot_games))
+        print("assist games" + str(assist_games))
+        print("missed shot games" + str(missed_shot_games))
+        print("foul games" + str(foul_games))
+        print("non shooting foul games" + str(non_shooting_foul_games))
+        print("shooting_foul_games" + str(shooting_foul_games))
+        print("off reb games" + str(off_reb_games))
+        print("def reb games" + str(def_reb_games))
+        print("time remaining" + str(time_remaining))
+        print(
+            "model doesn't currently account for rebound situation on a missed last ft"
+        )
         # update clocks in all games
         time_remaining -= possession_length
         # change possession in all games where there was a possession change
-        np.where(
-            possession_status_array[1, :] == 1,
-            1 - possession_status_array[0, :],
-            possession_status_array[0, :],
+        possession_status_array[0, :] += possession_status_array[1, :]
+        possession_status_array[0, :] = np.where(
+            possession_status_array[0, :] == 2, 0, possession_status_array[0, :]
         )
-        # reset all games back to active for the next loop
+
+        # shot clock reset array needs the values from row two (possession flip)
+        shot_clock_reset = possession_status_array[1, :].copy()
+        # reset all games for the next loop
+        possession_status_array[1, :] = 0
         possession_status_array[2, :] = 1
+        possession_status_array[3, :] = 0
+        possession_status_array[4, :] = 0
         continue
 
     # that's the end of the loop.
@@ -1157,20 +962,24 @@ def run_simulation(matchup_df, sample_size):
     ).convert_dtypes()
 
     # aggregate team box score and downcast to ints
-    team_box_score_df = box_score_df.groupby(level=0).sum().convert_dtypes()
+    team_box_score_df = box_score_df.groupby(level=[0, 1]).sum().convert_dtypes()
 
     full_box_score_json = orjson.loads(box_score_df.to_json(orient="index"))
     team_box_score_json = orjson.loads(team_box_score_df.to_json(orient="index"))
-    margin = int(
-        team_box_score_df.loc[home_away_dict["home"], "sim_points"]
-        - team_box_score_df.loc[home_away_dict["away"], "sim_points"]
+    # multiindex slice to get the margin per simulation
+    idx = pandas.IndexSlice
+    team_box_score_df.loc[idx[:, home_away_dict["home"], :], "sim_points"].droplevel("Team")
+    margins = (
+        team_box_score_df.loc[idx[:, home_away_dict["home"], :], "sim_points"].droplevel("Team")
+        - team_box_score_df.loc[idx[:, home_away_dict["away"], :], "sim_points"].droplevel("Team")
     )
 
+    # what the heck do we do here? some sort of comprehension or loop?
     return {
         "game_summary": {
             "away_team": home_away_dict["away"],
             "home_team": home_away_dict["home"],
-            "home_margin": margin,
+            "home_margin": margins,
             "total_possessions": total_possessions,
         },
         "team_box_score": team_box_score_json,
@@ -1202,14 +1011,18 @@ def event_sampler(rng, games_df, games_numpy):
 
 
 def assist_distribution(
-    possession_length, offensive_team, on_floor_df, tempo_factor, successful_shot_prob
+    possession_length, offensive_teams, on_floor_df, tempo_factor, successful_shot_prob
 ):
     assist_fields = [
         "Assists",
         "Minutes",
         "sim_assists",
     ]
-    assist_probs = on_floor_df.loc[[offensive_team], assist_fields]
+    # dropping the PlayerID level allows us to slice out only the teams on offense in each sim.
+    offensive_index = [(sim, team) for sim, team in enumerate(offensive_teams)]
+    assist_probs = on_floor_df.loc[
+        on_floor_df.index.droplevel("PlayerID").isin(offensive_index), assist_fields
+    ]
     # alternative...let's try truly modeling as an exponential distribution.
     # first calculate rate parameter (per game estimate)
     assist_probs["assist_chance_exp_theta"] = 1 / (
@@ -1447,24 +1260,29 @@ def rebound_distribution(offensive_teams, defensive_teams, on_floor_df):
         on_floor_df.index.droplevel("PlayerID").isin(defensive_index), def_reb_fields
     ]
 
-    team_off_reb_total = offensive_rebound_probs.groupby(level=0).sum()
-    team_def_reb_total = defensive_rebound_probs.groupby(level=0).sum()
-    rebound_denominator = (
-        team_off_reb_total["OffensiveRebounds"][0]
-        + team_def_reb_total["DefensiveRebounds"][0]
+    team_off_reb_totals = offensive_rebound_probs.groupby(level=[0, 1]).transform(
+        np.sum
+    )
+    team_def_reb_totals = defensive_rebound_probs.groupby(level=[0, 1]).transform(
+        np.sum
+    )
+    rebound_denominators = (
+        team_off_reb_totals["OffensiveRebounds"].to_numpy()
+        + team_def_reb_totals["DefensiveRebounds"].to_numpy()
     )
 
-    off_reb_share = offensive_rebound_probs.div(team_off_reb_total, level="Team")
-    offensive_rebound_probs["off_reb_pdf"] = off_reb_share["OffensiveRebounds"]
-    def_reb_share = defensive_rebound_probs.div(team_def_reb_total, level="Team")
-    defensive_rebound_probs["def_reb_pdf"] = def_reb_share["DefensiveRebounds"]
+    # calculate each player's share of their team's rebounds
+    off_reb_share = offensive_rebound_probs.div(team_off_reb_totals)
+    offensive_rebound_probs["off_reb_share"] = off_reb_share["OffensiveRebounds"]
+    def_reb_share = defensive_rebound_probs.div(team_def_reb_totals)
+    defensive_rebound_probs["def_reb_share"] = def_reb_share["DefensiveRebounds"]
 
-    off_reb_chance = team_off_reb_total["OffensiveRebounds"][0] / rebound_denominator
+    off_reb_chances = team_off_reb_totals["OffensiveRebounds"] / rebound_denominators
 
     return (
         offensive_rebound_probs,
         defensive_rebound_probs,
-        off_reb_chance,
+        off_reb_chances,
     )
 
 
