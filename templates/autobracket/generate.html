@@ -2,61 +2,42 @@
 
 {% block description %}
 <meta name="description" content="Mike Tarpey's March Madness bracket generator.
-This iteration from 2019 relied heavily on data from kenpom.com.">
+This year's iteration includes a full Monte Carlo simulation program!">
 {% endblock %}
 
 {% block title %} - autobracket{% endblock %}
 
 {% block style %}
+<!-- Shoelace needs to come before our CSS, otherwise we can't overwrite! -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.0.0-beta.27/dist/shoelace/shoelace.css">
+<script type="module" src="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.0.0-beta.27/dist/shoelace/shoelace.esm.js"></script>
 <link rel="stylesheet" type="text/css" href="{{ url_for('static', path='/autobracket/css/autobracket.css') }}">
 {% endblock %}
 
 {% block header %}autobracket{% endblock %}
 
 {% block content %}
-  <p>
-    This is an automatic bracket generator for March Madness 2019. <b>It's over now (congrats to UVA), but you can re-run the model in the state it was in before the Sweet 16 began.</b>
-    Improvements will be made before March Madness 2021 begins!
-  </p>
+<p>
+  This is an automatic bracket generator for March Madness 2021. I've simulated each of the possible games in the
+  bracket 1,000 times (full methodology coming soon). When you request a bracket, the app will choose from 1 of the
+  1,000 simulations for each game based on the level of spice you specify.
+</p>
 
-  <p>
-    This model relies heavily on the advanced college basketball analysis done at <a class="inline" href="https://kenpom.com">Kenpom</a>.
-    (It's basically just a made-up formula that puts some of his numbers together in a manner that has been mildly successful for me in the past.)
-  </p>
+<p>
+  Special thanks to <a href="https://kenpom.com" class="inline">Kenpom</a> for tempo data and <a href="https://fantasydata.com/" class="inline">fantasydata</a> for their great API!
+</p>
 
-  <p>
-    You can choose the Classic or Modern simulation. Classic only uses data from the 68 teams in the bracket to simulate this year's tournament. Modern will utilize data from all 353 teams listed on <a class="inline" href="https://kenpom.com">Kenpom</a>.
-  </p>
+<form action="{{ url_for('bracket') }}" method="POST">
 
-  <p>
-    You can add Chaos to the model if you feel like you're not getting enough upsets. 0 is default, and 10 is maximum chaos (basically 50/50).
-  </p>
+  <section>
+    How spicy would you like your bracket?<br>
+    <input name="spice_level" type="radio" id="none" value="none" required><label for="none">None (simulation "chalk")</label><br>
+    <input name="spice_level" type="radio" id="mild" value="mild" required><label for="mild">Mild (middle 50% of simulations)</label><br>
+    <input name="spice_level" type="radio" id="medium" value="medium" required><label for="medium">Medium (middle 80% of simulations)</label><br>
+    <input name="spice_level" type="radio" id="max" value="max" required><label for="max">MAX SPICE (hope you like outliers!)</label><br>
+  </section>
 
-  <p>
-    The model is updated with Round of 32 results. Do a Partial (Yes) model to start the model at the RO16, or a Full (No) model to re-run all 67 games.
-  </p>
+  <sl-button id="make-bracket" class="pnav-button" size="large">Make bracket</sl-button>
 
-  <form action="{{ url_for('bracket') }}" method="POST">
-    
-    <section class="ro32">
-    Use RO32 results?<br>
-    <input name="model_current" type="radio" id="partial" value="partial" required><label for="partial">Yes</label>
-    <input name="model_current" type="radio" id="full" value="full"><label for="full">No</label>
-    </section>
-
-    
-    <section class="model_type">
-    Model type?<br>
-    <input name="model_choice" type="radio" id="classic" value="classic" required><label for="classic">Classic</label>
-    <input name="model_choice" type="radio" id="modern" value="modern"><label for="partial">Modern</label>
-    </section>
-
-    <section class="added_chaos">
-    <label for='chaosbox'>Added chaos?</label><br>
-    <input id='chaosbox' name='chaos_choice' type="number" min="0" max="10" step="1" required>
-    </section>
-
-
-    <input type="submit" value="Go!">
-  </form>
+</form>
 {% endblock %}

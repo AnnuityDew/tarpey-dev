@@ -4,6 +4,7 @@ from enum import Enum
 from math import floor
 import multiprocessing
 from typing import Dict
+from odmantic.model import EmbeddedModel
 import orjson
 from time import perf_counter
 
@@ -33,6 +34,13 @@ ab_api = APIRouter(
 class FantasyDataSeason(str, Enum):
     PRIORSEASON1 = "2020"
     CURRENTSEASON = "2021"
+
+
+class BracketFlavor(str, Enum):
+    NONE = "none"
+    MILD = "mild"
+    MEDIUM = "medium"
+    MAX = "max"
 
 
 class PlayerSeason(Model):
@@ -91,8 +99,15 @@ class KenpomTeam(Model):
     NCAdjEM: float
 
 
+class GameSummary(EmbeddedModel):
+    away_team: str
+    home_team: str
+    home_margin: int
+    total_possessions: int
+
+
 class SimulationRun(Model):
-    game_summary: Dict
+    game_summary: GameSummary
     team_box_score: Dict
     full_box_score: Dict
 
@@ -234,6 +249,85 @@ async def k_means_players(
 
 
 @ab_api.get(
+    "/game/{season}/{away_team}/{home_team}/{flavor}",
+    dependencies=[Depends(oauth2_scheme)],
+)
+async def single_sim_game(
+    season: FantasyDataSeason,
+    away_team: str,
+    home_team: str,
+    flavor: BracketFlavor,
+    client: AsyncIOMotorClient = Depends(get_odm),
+):
+    # first grab game data and associated object IDs
+    engine = AIOEngine(motor_client=client, database="autobracket")
+    game_data = [
+        [game.id, game.game_summary.home_margin]
+        async for game in engine.find(
+            SimulationRun,
+            (
+                (SimulationRun.game_summary.season == season)
+                & (SimulationRun.game_summary.away_team == away_team)
+                & (SimulationRun.game_summary.home_team == home_team)
+            ),
+            sort=(SimulationRun.game_summary.home_margin),
+        )
+    ]
+
+    # convert to pandas dataframe and calculate quantiles
+    game_df = pandas.DataFrame(game_data, columns=["ObjectId", "margin"])
+    quantiles = game_df.quantile(q=[.10, .25, .50, .75, .90])
+    # depending on what the user selected, filter the df for sampling
+    if flavor == BracketFlavor.NONE:
+        game_df = game_df.loc[
+            game_df.margin == quantiles.loc[.50][0]
+        ]
+    elif flavor == BracketFlavor.MILD:
+        game_df = game_df.loc[
+            game_df.margin.between(quantiles.loc[.25][0], quantiles.loc[.75][0])
+        ]
+    elif flavor == BracketFlavor.MEDIUM:
+        game_df = game_df.loc[
+            game_df.margin.between(quantiles.loc[.10][0], quantiles.loc[.90][0])
+        ]
+
+    # now sample a random game from the filtered data frame and query the DB for its full box score
+    selected_game = game_df.sample(n=1).iat[0,0]
+
+    game_data = await engine.find_one(SimulationRun, (SimulationRun.id == selected_game))
+
+    return game_data
+
+
+@ab_api.get(
+    "/sim/margins/{season}/{away_team}/{home_team}",
+    dependencies=[Depends(oauth2_scheme)],
+)
+async def matchup_sim_margin(
+    season: FantasyDataSeason,
+    away_team: str,
+    home_team: str,
+    client: AsyncIOMotorClient = Depends(get_odm),
+):
+
+    engine = AIOEngine(motor_client=client, database="autobracket")
+    margin_data = [
+        game.game_summary.home_margin
+        async for game in engine.find(
+            SimulationRun,
+            (
+                (SimulationRun.game_summary.season == season)
+                & (SimulationRun.game_summary.away_team == away_team)
+                & (SimulationRun.game_summary.home_team == home_team)
+            ),
+            sort=(SimulationRun.game_summary.home_margin),
+        )
+    ]
+
+    return margin_data
+
+
+@ab_api.get(
     "/sim/{season}/{away_team}/{home_team}/{sample_size}",
     dependencies=[Depends(oauth2_scheme)],
 )
@@ -266,7 +360,7 @@ async def full_game_simulation(
     matchup_df["designation"] = "home"
     matchup_df.loc[matchup_df["Team"] == away_team, "designation"] = "away"
 
-    # create a list of matchup dfs representing multiple simulations
+    # if multiprocessing, create a list of matchup dfs representing multiple simulations
     if False:
         cores_to_use = multiprocessing.cpu_count()
         simulations = [matchup_df.copy() for x in range(sample_size)]
@@ -277,8 +371,8 @@ async def full_game_simulation(
             p.close()
             p.join()
     else:
-        # just do one run
-        results = run_simulation(matchup_df, sample_size)
+        # new array program is working!
+        results = run_simulation(matchup_df, sample_size, season)
 
     sim_time = perf_counter()
 
@@ -288,14 +382,16 @@ async def full_game_simulation(
     db_time = perf_counter()
 
     return {
+        "success": "Check database for output!",
         "sim_time": (sim_time - start_time),
         "db_time": (db_time - sim_time),
         "simulations": sample_size,
-        "results": results,
     }
 
 
-def run_simulation(matchup_df, sample_size):
+def run_simulation(matchup_df, sample_size, season):
+    start_time = perf_counter()
+    print("start: " + str(start_time))
     # sort df by designation and playerID to guarantee order for later operations
     matchup_df.sort_values(by=["designation", "PlayerID"], inplace=True)
 
@@ -387,8 +483,13 @@ def run_simulation(matchup_df, sample_size):
         names=["simulation"],
     )
 
+    current_time = perf_counter()
+    print("preloop: " + str(current_time - start_time))
+
     # loop continues while any game is still ongoing
     while max(time_remaining) >= 0:
+        start_time = perf_counter()
+        print("start loop: " + str(start_time))
         # if there was a shot clock reset, this will add a possession to that particular game
         total_possessions += shot_clock_reset
 
@@ -461,28 +562,31 @@ def run_simulation(matchup_df, sample_size):
 
         # pick 10 players for the current possession based on average time share
         # pandas has a bug so we're doing this with numpy now.
+        away_team_sample = rng.choice(
+            away_minute_weights[:, 0],
+            size=5,
+            replace=False,
+            p=away_minute_weights[:, 1],
+        )
+        home_team_sample = rng.choice(
+            home_minute_weights[:, 0],
+            size=5,
+            replace=False,
+            p=home_minute_weights[:, 1],
+        )
+
         on_floor_all_sims = np.array(
             [
                 np.concatenate(
                     (
                         np.isin(
                             away_minute_weights[:, 0],
-                            rng.choice(
-                                away_minute_weights[:, 0],
-                                size=5,
-                                replace=False,
-                                p=away_minute_weights[:, 1],
-                            ),
+                            away_team_sample,
                         )
                         * 1,
                         np.isin(
                             home_minute_weights[:, 0],
-                            rng.choice(
-                                home_minute_weights[:, 0],
-                                size=5,
-                                replace=False,
-                                p=home_minute_weights[:, 1],
-                            ),
+                            home_team_sample,
                         )
                         * 1,
                     ),
@@ -490,6 +594,8 @@ def run_simulation(matchup_df, sample_size):
                 for x in range(sample_size)
             ]
         ).flatten()
+        current_time = perf_counter()
+
         matchup_df["player_on_floor"] = on_floor_all_sims
         # copy here to avoid a later settingwithcopywarning
         on_floor_df = matchup_df.loc[matchup_df.player_on_floor == 1].copy()
@@ -501,6 +607,9 @@ def run_simulation(matchup_df, sample_size):
         # numpy array is expanded 10x so each player of the 10 on the floor can get their time
         on_floor_df["sim_seconds"] += np.repeat(possession_length, 10)
         matchup_df.update(on_floor_df)
+
+        current_time = perf_counter()
+        print("select players: " + str(current_time - start_time))
 
         # now, based on the 10 players on the floor, calculate probability of each event.
         # first, a steal check happens here. use steals per second over the season.
@@ -578,6 +687,9 @@ def run_simulation(matchup_df, sample_size):
         # update third row to indicate end of loop for this game
         np.put(possession_status_array[2, :], turnover_games, 0)
 
+        current_time = perf_counter()
+        print("turnovers: " + str(current_time - start_time))
+
         # if we've made it this far, there could be a non-shooting foul.
         # let's do foul logic here so we can be ready for both types
         # of fouls later. (no offensive fouls for now)
@@ -635,6 +747,9 @@ def run_simulation(matchup_df, sample_size):
         shooting_foul_occurrences = foul_occurrences
         np.put(shooting_foul_occurrences, non_shooting_foul_games, 0)
         shooting_foul_occurrences = np.repeat(shooting_foul_occurrences, 5)
+
+        current_time = perf_counter()
+        print("fouls: " + str(current_time - start_time))
 
         # time to model shot attempts. if there's no steal or turnover,
         # a shot is the only other outcome, so we can simply model who's
@@ -725,6 +840,9 @@ def run_simulation(matchup_df, sample_size):
         shot_probs["sim_two_pointers_attempted"] += two_attempt_array
         shot_probs["sim_three_pointers_attempted"] += three_attempt_array
 
+        current_time = perf_counter()
+        print("blocks: " + str(current_time - start_time))
+
         # we need to prep for assist and foul calculation here. will involve Bayes,
         # so we need the components for probability of a successful shot
         # in this possession (1 minus everything that had to be dodged up
@@ -813,6 +931,9 @@ def run_simulation(matchup_df, sample_size):
         # update all shots attempted and made in the possession here!
         matchup_df.update(shot_probs)
 
+        current_time = perf_counter()
+        print("shots: " + str(current_time - start_time))
+
         # time for assist logic. update given probabilities first.
         # the prior prob is a little different depending on whether a two or three was made
         shot_probs["attempted_shot_this_loop"] = prior_attempted_shot_array
@@ -856,6 +977,9 @@ def run_simulation(matchup_df, sample_size):
         # add assists to the box score
         matchup_df.update(assist_games_df)
 
+        current_time = perf_counter()
+        print("assists: " + str(current_time - start_time))
+
         # finally, need to decide rebound situations. who gets the rebound?
         (
             offensive_rebound_probs,
@@ -898,6 +1022,9 @@ def run_simulation(matchup_df, sample_size):
         matchup_df.update(off_reb_games_df)
         matchup_df.update(def_reb_games_df)
 
+        current_time = perf_counter()
+        print("rebounds: " + str(current_time - start_time))
+
         print("steal games" + str(steal_games))
         print("turnover games" + str(turnover_games))
         print("block games" + str(block_games))
@@ -930,6 +1057,8 @@ def run_simulation(matchup_df, sample_size):
         possession_status_array[2, :] = 1
         possession_status_array[3, :] = 0
         possession_status_array[4, :] = 0
+        current_time = perf_counter()
+        print("end loop: " + str(current_time - start_time))
         continue
 
     # that's the end of the loop.
@@ -964,27 +1093,41 @@ def run_simulation(matchup_df, sample_size):
     # aggregate team box score and downcast to ints
     team_box_score_df = box_score_df.groupby(level=[0, 1]).sum().convert_dtypes()
 
-    full_box_score_json = orjson.loads(box_score_df.to_json(orient="index"))
-    team_box_score_json = orjson.loads(team_box_score_df.to_json(orient="index"))
     # multiindex slice to get the margin per simulation
     idx = pandas.IndexSlice
-    team_box_score_df.loc[idx[:, home_away_dict["home"], :], "sim_points"].droplevel("Team")
-    margins = (
-        team_box_score_df.loc[idx[:, home_away_dict["home"], :], "sim_points"].droplevel("Team")
-        - team_box_score_df.loc[idx[:, home_away_dict["away"], :], "sim_points"].droplevel("Team")
+    team_box_score_df.loc[idx[:, home_away_dict["home"], :], "sim_points"].droplevel(
+        "Team"
+    )
+    margins = team_box_score_df.loc[
+        idx[:, home_away_dict["home"], :], "sim_points"
+    ].droplevel("Team") - team_box_score_df.loc[
+        idx[:, home_away_dict["away"], :], "sim_points"
+    ].droplevel(
+        "Team"
     )
 
+    # build the format of results for database input
+    results_array = [
+        {
+            "game_summary": {
+                "season": season,
+                "away_team": home_away_dict["away"],
+                "home_team": home_away_dict["home"],
+                "home_margin": int(margins[sim]),
+                "total_possessions": int(total_possessions[sim]),
+            },
+            "team_box_score": orjson.loads(
+                team_box_score_df.loc[sim].to_json(orient="index")
+            ),
+            "full_box_score": orjson.loads(
+                box_score_df.loc[sim].to_json(orient="index")
+            ),
+        }
+        for sim in range(sample_size)
+    ]
+
     # what the heck do we do here? some sort of comprehension or loop?
-    return {
-        "game_summary": {
-            "away_team": home_away_dict["away"],
-            "home_team": home_away_dict["home"],
-            "home_margin": margins,
-            "total_possessions": total_possessions,
-        },
-        "team_box_score": team_box_score_json,
-        "full_box_score": full_box_score_json,
-    }
+    return results_array
 
 
 def event_sampler(rng, games_df, games_numpy):

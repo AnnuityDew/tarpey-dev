@@ -13,6 +13,10 @@ app = create_fastapi_app()
 client = TestClient(app)
 
 
+# autobracket negative distribution test
+# games don't go into negative time test
+# tests that ensure independent events don't happen in the same possession
+
 def test_all_simple_views():
     '''Test all simple views (one-template public GET views with no arguments).'''
     tagged_url_dicts = [

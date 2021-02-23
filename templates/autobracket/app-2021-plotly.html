@@ -16,8 +16,8 @@ This is the 2021 version...currently under construction!">
 
 {% block java %}
 <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
-<script src="https://d3js.org/d3.v6.min.js"></script>
-<script src="https://d3js.org/d3-axis.v2.min.js"></script>
+<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+<script src="{{ url_for('static', path='/index/js/tarpeydevlayout.js') }}"></script>
 {% endblock %}
 
 {% block header %}autobracket 2021{% endblock %}
@@ -26,15 +26,11 @@ This is the 2021 version...currently under construction!">
 <p>
     This page is under construction! But feel free to click through what I've got so far...
 </p>
-
-<p>
-    <a href="{{ url_for('app2021plotly') }}" class="inline">Click here for the Plotly charts.</a>
-</p>
 <nav id="exhibit-changer">
     <sl-button id="back-button" class="pnav-button" size="large"><= Back</sl-button>
     <span id="exhibit-title" class="center"></span>
     <sl-button id="next-button" class="pnav-button" size="large">Next =></sl-button>
 </nav>
-<section id="analysis" class="svg-container"></section>
-<script src="{{ url_for('static', path='/autobracket/js/app-2021.js') }}"></script>
+<section id="analysis"></section>
+<script src="{{ url_for('static', path='/autobracket/js/app-2021-plotly.js') }}"></script>
 {% endblock %}

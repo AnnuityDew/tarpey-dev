@@ -16,9 +16,17 @@ templates = Jinja2Templates(directory="templates")
 
 
 @autobracket_views.get("/", response_class=HTMLResponse, tags=["react_view"])
-async def generate(request: Request):
+async def app2021(request: Request):
     return templates.TemplateResponse(
         'autobracket/app-2021.html',
+        context={'request': request}
+    )
+
+
+@autobracket_views.get("/plotly", response_class=HTMLResponse, tags=["react_view"])
+async def app2021plotly(request: Request):
+    return templates.TemplateResponse(
+        'autobracket/app-2021-plotly.html',
         context={'request': request}
     )
 
