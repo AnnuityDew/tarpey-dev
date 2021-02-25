@@ -1,4 +1,4 @@
-from datetime import datetime
+from instance.config import GCP_LOCATION, GCP_MM_QUEUE, GCP_PROJECT, GCP_QUEUE_SA_EMAIL
 from itertools import combinations
 import pandas as pd
 import pathlib
@@ -31,10 +31,10 @@ def simulate_all_matchups():
     client = tasks_v2.CloudTasksClient()
 
     # google cloud task queue info
-    project = 'tarpeydev'
-    queue = '***REMOVED***'
-    location = '***REMOVED***'
-    service_account_email = '***REMOVED***-***REMOVED***'
+    project = GCP_PROJECT
+    queue = GCP_MM_QUEUE
+    location = GCP_LOCATION
+    service_account_email = GCP_QUEUE_SA_EMAIL
     payload = None
 
     # Construct the fully qualified queue name.
