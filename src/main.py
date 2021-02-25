@@ -59,7 +59,7 @@ def create_fastapi_app():
 
     # startup and shutdown connection to DB
     # see https://motor.readthedocs.io/en/stable/tutorial-asyncio.html
-    view_app.add_event_handler('startup', multiproc_context)
+    # view_app.add_event_handler('startup', multiproc_context)
     view_app.add_event_handler('startup', motor_startup)
     view_app.add_event_handler('shutdown', motor_shutdown)
 

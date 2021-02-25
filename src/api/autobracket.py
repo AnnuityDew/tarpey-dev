@@ -53,7 +53,7 @@ class CBBTeam(Model):
     TeamLogoUrl: str
     ShortDisplayName: str
     Stadium: Dict
-    Season: int
+    Season: str
     Rk: int
     Conf: str
     W: int
@@ -107,12 +107,6 @@ class PlayerSeason(Model):
     ft_chance: float
 
 
-class KenpomTeam(Model):
-    Season: FantasyDataSeason
-    Rk: int
-    Team: str
-
-
 class GameSummary(EmbeddedModel):
     away_team: str
     home_team: str
@@ -124,6 +118,22 @@ class SimulationRun(Model):
     game_summary: GameSummary
     team_box_score: Dict
     full_box_score: Dict
+
+
+class SimulationDist(Model):
+    away_team: str
+    home_team: str
+    home_win_chance_max: float
+    max_margin_top: int
+    max_margin_bottom: int
+    home_win_chance_medium: float
+    medium_margin_top: int
+    medium_margin_bottom: int
+    home_win_chance_mild: float
+    mild_margin_top: int
+    mild_margin_bottom: int
+    home_win_chance_median: float
+    median_margin: int
 
 
 @ab_api.get("/stats/{season}/all", dependencies=[Depends(oauth2_scheme)])
@@ -390,15 +400,15 @@ async def matchup_sim_margin(
     return margin_data
 
 
-@ab_api.get(
-    "/sim/{season}/{away_team}/{home_team}/{sample_size}",
-    dependencies=[Depends(oauth2_scheme)],
+@ab_api.post(
+    "/sim/{season}/{away_team}/{home_team}/{sample_size}/{preserve_size}",
 )
 async def full_game_simulation(
     season: FantasyDataSeason,
     away_team: str,
     home_team: str,
     sample_size: int = Path(..., gt=0, le=1000),
+    preserve_size: int = Path(..., gt=0, le=100),
     client: AsyncIOMotorClient = Depends(get_odm),
 ):
     # performance timer
@@ -423,6 +433,19 @@ async def full_game_simulation(
     matchup_df["designation"] = "home"
     matchup_df.loc[matchup_df["Team"] == away_team, "designation"] = "away"
 
+    # pull Kenpom tempo data for the two teams
+    kenpom_data = [
+        team
+        async for team in engine.find(
+            CBBTeam,
+            (CBBTeam.Season == season)
+            & ((CBBTeam.Key == away_team) | (CBBTeam.Key == home_team)),
+            sort=(CBBTeam.Key),
+        )
+    ]
+    kenpom_df = pandas.DataFrame([team.doc() for team in kenpom_data])
+    kenpom_tempo = kenpom_df.AdjT.sum()
+
     # if multiprocessing, create a list of matchup dfs representing multiple simulations
     if False:
         cores_to_use = multiprocessing.cpu_count()
@@ -435,12 +458,16 @@ async def full_game_simulation(
             p.join()
     else:
         # new array program is working!
-        results = run_simulation(matchup_df, sample_size, season)
+        results, distribution = run_simulation(
+            matchup_df, season, sample_size, preserve_size, kenpom_tempo
+        )
 
     sim_time = perf_counter()
 
+    writes = [SimulationRun(**doc) for doc in results] + [SimulationDist(**distribution)]
+
     # write results to MongoDB
-    await engine.save_all([SimulationRun(**doc) for doc in results])
+    await engine.save_all(writes)
 
     db_time = perf_counter()
 
@@ -452,7 +479,7 @@ async def full_game_simulation(
     }
 
 
-def run_simulation(matchup_df, sample_size, season):
+def run_simulation(matchup_df, season, sample_size, preserve_size, kenpom_tempo):
     start_time = perf_counter()
     print("start: " + str(start_time))
     # sort df by designation and playerID to guarantee order for later operations
@@ -529,11 +556,12 @@ def run_simulation(matchup_df, sample_size, season):
     shot_clock_reset = np.ones(sample_size, dtype=np.int8)
     possession_length = np.zeros(sample_size)
     total_possessions = np.zeros(sample_size, dtype=np.int16)
-    tempo_factor = 1 / 1
-
-    # need to think about this more, but for now avg. possession length 15 as a normal
-    possession_length_mean = 15  # 2400 / (Offensive Tempo + Defensive Tempo)
-    possession_length_stdev = 4
+    # normal mean 15 and stdev 4 yields about 140 possessions a game.
+    # so let's adjust the normal dist mean by 140 / kenpomtempo
+    # (this makes possessions longer if tempo is less than 140)
+    tempo_factor = 140 / kenpom_tempo
+    possession_length_mean = 15 * tempo_factor
+    possession_length_stdev = 4 * tempo_factor
 
     # set index that will be the basis for updating box score.
     matchup_df.set_index(["Team", "PlayerID"], inplace=True)
@@ -683,12 +711,12 @@ def run_simulation(matchup_df, sample_size, season):
         # you can't get a steal while you're on offense!)
         # i think this is where we would put a tempo factor...
         steal_probs = steal_distribution(
-            possession_length, defensive_teams, on_floor_df, tempo_factor
+            possession_length, defensive_teams, on_floor_df
         )
 
         # we also need turnover probabilities here
         turnover_probs = turnover_distribution(
-            possession_length, offensive_teams, on_floor_df, tempo_factor
+            possession_length, offensive_teams, on_floor_df
         )
 
         # the steal/turnover check! we're modeling them as independent.
@@ -763,7 +791,6 @@ def run_simulation(matchup_df, sample_size, season):
             possession_length,
             defensive_teams,
             on_floor_df,
-            tempo_factor,
             given_probabilities,
         )
 
@@ -841,7 +868,6 @@ def run_simulation(matchup_df, sample_size, season):
             possession_length,
             defensive_teams,
             on_floor_df,
-            tempo_factor,
             given_probabilities,
         )
 
@@ -1018,7 +1044,6 @@ def run_simulation(matchup_df, sample_size, season):
             possession_length,
             offensive_teams,
             on_floor_df,
-            tempo_factor,
             given_probabilities,
         )
         assist_success_rng = rng.random(size=sample_size)
@@ -1169,13 +1194,22 @@ def run_simulation(matchup_df, sample_size, season):
         "Team"
     )
 
+    # preserve a subset of runs that will actually be persisted to the database
+    quantiles = np.linspace(0, 1, preserve_size)
+    margins_to_save = margins.quantile(q=quantiles).to_numpy()
+    games_to_save = []
+    for margin in margins_to_save:
+        selected_game = rng.choice(np.array(margins.index[margins == margin]))
+        games_to_save.append(selected_game)
+
     # build the format of results for database input
     results_array = [
         {
             "game_summary": {
-                "season": season,
+                "season": season.value,
                 "away_team": home_away_dict["away"],
                 "home_team": home_away_dict["home"],
+                "neutral_site": True,
                 "home_margin": int(margins[sim]),
                 "total_possessions": int(total_possessions[sim]),
             },
@@ -1186,11 +1220,48 @@ def run_simulation(matchup_df, sample_size, season):
                 box_score_df.loc[sim].to_json(orient="index")
             ),
         }
-        for sim in range(sample_size)
+        for sim in games_to_save
     ]
 
-    # what the heck do we do here? some sort of comprehension or loop?
-    return results_array
+    # to lighten the load on the DB, we'll preserve the simulation distribution.
+    # this will be a way to avoid pulling tons of data for each bracket request
+    user_breakpoints = margins.quantile(q=[0.00, 0.10, 0.25, 0.50, 0.75, 0.90, 1.00])
+    home_win_chance_max = len(margins.loc[margins > 0]) / len(margins)
+    home_win_chance_medium = len(
+        margins.loc[(user_breakpoints[0.90] >= margins) & (margins > 0)]
+    ) / len(
+        margins.loc[
+            (user_breakpoints[0.90] >= margins) & (margins >= user_breakpoints[0.10])
+        ]
+    )
+    home_win_chance_mild = len(
+        margins.loc[(user_breakpoints[0.75] >= margins) & (margins > 0)]
+    ) / len(
+        margins.loc[
+            (user_breakpoints[0.75] >= margins) & (margins >= user_breakpoints[0.25])
+        ]
+    )
+    home_win_chance_median = len(
+        margins.loc[(user_breakpoints[0.50] >= margins) & (margins > 0)]
+    ) / len(margins.loc[(user_breakpoints[0.50] == margins)])
+
+    distribution_data = {
+        "away_team": home_away_dict["away"],
+        "home_team": home_away_dict["home"],
+        "home_win_chance_max": home_win_chance_max,
+        "max_margin_top": user_breakpoints[1.00],
+        "max_margin_bottom": user_breakpoints[0.00],
+        "home_win_chance_medium": home_win_chance_medium,
+        "medium_margin_top": user_breakpoints[0.90],
+        "medium_margin_bottom": user_breakpoints[0.10],
+        "home_win_chance_mild": home_win_chance_mild,
+        "mild_margin_top": user_breakpoints[0.75],
+        "mild_margin_bottom": user_breakpoints[0.25],
+        "home_win_chance_median": home_win_chance_median,
+        "median_margin": user_breakpoints[0.50],
+    }
+
+    return results_array, distribution_data
 
 
 def event_sampler(rng, games_df, games_numpy):
@@ -1217,7 +1288,7 @@ def event_sampler(rng, games_df, games_numpy):
 
 
 def assist_distribution(
-    possession_length, offensive_teams, on_floor_df, tempo_factor, successful_shot_prob
+    possession_length, offensive_teams, on_floor_df, successful_shot_prob
 ):
     assist_fields = [
         "Assists",
@@ -1232,7 +1303,7 @@ def assist_distribution(
     # alternative...let's try truly modeling as an exponential distribution.
     # first calculate rate parameter (per game estimate)
     assist_probs["assist_chance_exp_theta"] = 1 / (
-        (2 * tempo_factor) * assist_probs["Assists"] / assist_probs["Minutes"] / 60
+        2 * assist_probs["Assists"] / assist_probs["Minutes"] / 60
     )
     # now use rate parameter to calculate CDF per player, per possession.
     # x = the percentage of the team's gametime that has elapsed
@@ -1257,7 +1328,7 @@ def assist_distribution(
 
 
 def foul_distribution(
-    possession_length, defensive_teams, on_floor_df, tempo_factor, attempted_shot_prob
+    possession_length, defensive_teams, on_floor_df, attempted_shot_prob
 ):
     foul_fields = [
         "PersonalFouls",
@@ -1277,10 +1348,10 @@ def foul_distribution(
     # let's try truly modeling as an exponential distribution.
     # first calculate rate parameter (1 / theta or beta), aka
     # (1 / average amount of seconds between two events)
-    # factor of 2 * tempo_factor because you can only steal
+    # factor of 2 because you can only steal
     # when you're playing on defense!
     foul_probs["foul_chance_exp_theta"] = 1 / (
-        (2 * tempo_factor) * foul_probs["PersonalFouls"] / foul_probs["Minutes"] / 60
+        2 * foul_probs["PersonalFouls"] / foul_probs["Minutes"] / 60
     )
     # now use rate parameter to calculate CDF per player, per possession.
     # x = the percentage of the team's gametime that has elapsed
@@ -1305,7 +1376,7 @@ def foul_distribution(
 
 
 def block_distribution(
-    possession_length, defensive_teams, on_floor_df, tempo_factor, no_turnover_prob
+    possession_length, defensive_teams, on_floor_df, no_turnover_prob
 ):
     block_fields = ["BlockedShots", "Minutes", "sim_blocks"]
     # dropping the PlayerID level allows us to slice out only the teams on defense in each sim.
@@ -1317,10 +1388,10 @@ def block_distribution(
     # let's try truly modeling as an exponential distribution.
     # first calculate rate parameter (1 / theta or beta), aka
     # (1 / average amount of seconds between two events)
-    # factor of 2 * tempo_factor because you can only steal
+    # factor of 2 because you can only steal
     # when you're playing on defense!
     block_probs["block_chance_exp_theta"] = 1 / (
-        (2 * tempo_factor) * block_probs["BlockedShots"] / block_probs["Minutes"] / 60
+        2 * block_probs["BlockedShots"] / block_probs["Minutes"] / 60
     )
     # now use rate parameter to calculate CDF per player, per possession.
     # x = the percentage of the team's gametime that has elapsed
@@ -1379,7 +1450,7 @@ def shot_distribution(offensive_teams, on_floor_df):
     return shot_probs
 
 
-def steal_distribution(possession_length, defensive_teams, on_floor_df, tempo_factor):
+def steal_distribution(possession_length, defensive_teams, on_floor_df):
     steal_fields = [
         "Steals",
         "Minutes",
@@ -1393,10 +1464,10 @@ def steal_distribution(possession_length, defensive_teams, on_floor_df, tempo_fa
     # let's try truly modeling as an exponential distribution.
     # first calculate rate parameter (1 / theta or beta), aka
     # (1 / average amount of seconds between two events)
-    # factor of 2 * tempo_factor because you can only steal
+    # factor of 2 because you can only steal
     # when you're playing on defense!
     steal_probs["steal_chance_exp_theta"] = 1 / (
-        (2 * tempo_factor) * steal_probs["Steals"] / steal_probs["Minutes"] / 60
+        2 * steal_probs["Steals"] / steal_probs["Minutes"] / 60
     )
     # now use rate parameter to calculate CDF per player, per possession.
     # x = the percentage of the team's gametime that has elapsed
@@ -1412,9 +1483,7 @@ def steal_distribution(possession_length, defensive_teams, on_floor_df, tempo_fa
     return steal_probs
 
 
-def turnover_distribution(
-    possession_length, offensive_teams, on_floor_df, tempo_factor
-):
+def turnover_distribution(possession_length, offensive_teams, on_floor_df):
     turnover_fields = [
         "Turnovers",
         "Minutes",
@@ -1428,13 +1497,10 @@ def turnover_distribution(
     # let's try truly modeling as an exponential distribution.
     # first calculate rate parameter (1 / theta or beta), aka
     # (1 / average amount of seconds between two events)
-    # factor of 2 * tempo_factor because you can only steal
+    # factor of 2 because you can only steal
     # when you're playing on defense!
     turnover_probs["turnover_chance_exp_theta"] = 1 / (
-        (2 * tempo_factor)
-        * turnover_probs["Turnovers"]
-        / turnover_probs["Minutes"]
-        / 60
+        2 * turnover_probs["Turnovers"] / turnover_probs["Minutes"] / 60
     )
     # now use rate parameter to calculate CDF per player, per possession.
     # x = the percentage of the team's gametime that has elapsed
@@ -1655,6 +1721,9 @@ async def refresh_fd_teams(
         .drop(columns=["fd_key", "fd_school", "fd_name", "kenpom_team"])
         .convert_dtypes()
     )
+
+    # season should be string (ex: 2020POST)
+    teams_df["Season"] = teams_df["Season"].map(str).astype("string")
 
     # back to json for writing to DB. reset index so TeamID makes it in
     engine = AIOEngine(motor_client=client, database="autobracket")
