@@ -464,7 +464,9 @@ async def full_game_simulation(
 
     sim_time = perf_counter()
 
-    writes = [SimulationRun(**doc) for doc in results] + [SimulationDist(**distribution)]
+    writes = [SimulationRun(**doc) for doc in results] + [
+        SimulationDist(**distribution)
+    ]
 
     # write results to MongoDB
     await engine.save_all(writes)
@@ -480,8 +482,7 @@ async def full_game_simulation(
 
 
 def run_simulation(matchup_df, season, sample_size, preserve_size, kenpom_tempo):
-    start_time = perf_counter()
-    print("start: " + str(start_time))
+
     # sort df by designation and playerID to guarantee order for later operations
     matchup_df.sort_values(by=["designation", "PlayerID"], inplace=True)
 
@@ -574,13 +575,8 @@ def run_simulation(matchup_df, season, sample_size, preserve_size, kenpom_tempo)
         names=["simulation"],
     )
 
-    current_time = perf_counter()
-    print("preloop: " + str(current_time - start_time))
-
     # loop continues while any game is still ongoing
     while max(time_remaining) >= 0:
-        start_time = perf_counter()
-        print("start loop: " + str(start_time))
         # if there was a shot clock reset, this will add a possession to that particular game
         total_possessions += shot_clock_reset
 
@@ -699,9 +695,6 @@ def run_simulation(matchup_df, season, sample_size, preserve_size, kenpom_tempo)
         on_floor_df["sim_seconds"] += np.repeat(possession_length, 10)
         matchup_df.update(on_floor_df)
 
-        current_time = perf_counter()
-        print("select players: " + str(current_time - start_time))
-
         # now, based on the 10 players on the floor, calculate probability of each event.
         # first, a steal check happens here. use steals per second over the season.
         # improvement: factor in the opponent's turnover statistics here.
@@ -778,9 +771,6 @@ def run_simulation(matchup_df, season, sample_size, preserve_size, kenpom_tempo)
         # update third row to indicate end of loop for this game
         np.put(possession_status_array[2, :], turnover_games, 0)
 
-        current_time = perf_counter()
-        print("turnovers: " + str(current_time - start_time))
-
         # if we've made it this far, there could be a non-shooting foul.
         # let's do foul logic here so we can be ready for both types
         # of fouls later. (no offensive fouls for now)
@@ -837,9 +827,6 @@ def run_simulation(matchup_df, season, sample_size, preserve_size, kenpom_tempo)
         shooting_foul_occurrences = foul_occurrences
         np.put(shooting_foul_occurrences, non_shooting_foul_games, 0)
         shooting_foul_occurrences = np.repeat(shooting_foul_occurrences, 5)
-
-        current_time = perf_counter()
-        print("fouls: " + str(current_time - start_time))
 
         # time to model shot attempts. if there's no steal or turnover,
         # a shot is the only other outcome, so we can simply model who's
@@ -929,9 +916,6 @@ def run_simulation(matchup_df, season, sample_size, preserve_size, kenpom_tempo)
         shot_probs["sim_two_pointers_attempted"] += two_attempt_array
         shot_probs["sim_three_pointers_attempted"] += three_attempt_array
 
-        current_time = perf_counter()
-        print("blocks: " + str(current_time - start_time))
-
         # we need to prep for assist and foul calculation here. will involve Bayes,
         # so we need the components for probability of a successful shot
         # in this possession (1 minus everything that had to be dodged up
@@ -1020,9 +1004,6 @@ def run_simulation(matchup_df, season, sample_size, preserve_size, kenpom_tempo)
         # update all shots attempted and made in the possession here!
         matchup_df.update(shot_probs)
 
-        current_time = perf_counter()
-        print("shots: " + str(current_time - start_time))
-
         # time for assist logic. update given probabilities first.
         # the prior prob is a little different depending on whether a two or three was made
         shot_probs["attempted_shot_this_loop"] = prior_attempted_shot_array
@@ -1065,9 +1046,6 @@ def run_simulation(matchup_df, season, sample_size, preserve_size, kenpom_tempo)
         # add assists to the box score
         matchup_df.update(assist_games_df)
 
-        current_time = perf_counter()
-        print("assists: " + str(current_time - start_time))
-
         # finally, need to decide rebound situations. who gets the rebound?
         (
             offensive_rebound_probs,
@@ -1109,27 +1087,7 @@ def run_simulation(matchup_df, season, sample_size, preserve_size, kenpom_tempo)
         def_reb_games_df["sim_defensive_rebounds"] += def_reb_array
         matchup_df.update(off_reb_games_df)
         matchup_df.update(def_reb_games_df)
-
-        current_time = perf_counter()
-        print("rebounds: " + str(current_time - start_time))
-
-        print("steal games" + str(steal_games))
-        print("turnover games" + str(turnover_games))
-        print("block games" + str(block_games))
-        print("block inbounds games" + str(block_inb_games))
-        print("block out of bounds games" + str(block_oob_games))
-        print("successful shot games" + str(successful_shot_games))
-        print("assist games" + str(assist_games))
-        print("missed shot games" + str(missed_shot_games))
-        print("foul games" + str(foul_games))
-        print("non shooting foul games" + str(non_shooting_foul_games))
-        print("shooting_foul_games" + str(shooting_foul_games))
-        print("off reb games" + str(off_reb_games))
-        print("def reb games" + str(def_reb_games))
-        print("time remaining" + str(time_remaining))
-        print(
-            "model doesn't currently account for rebound situation on a missed last ft"
-        )
+        
         # update clocks in all games
         time_remaining -= possession_length
         # change possession in all games where there was a possession change
@@ -1145,8 +1103,6 @@ def run_simulation(matchup_df, season, sample_size, preserve_size, kenpom_tempo)
         possession_status_array[2, :] = 1
         possession_status_array[3, :] = 0
         possession_status_array[4, :] = 0
-        current_time = perf_counter()
-        print("end loop: " + str(current_time - start_time))
         continue
 
     # that's the end of the loop.
@@ -1194,9 +1150,12 @@ def run_simulation(matchup_df, season, sample_size, preserve_size, kenpom_tempo)
         "Team"
     )
 
-    # preserve a subset of runs that will actually be persisted to the database
+    print("model doesn't currently account for rebound situation on a missed last ft")
+
+    # preserve a subset of runs that will actually be persisted to the database.
+    # if we run into errors it's probably the interpolation that needs further examination.
     quantiles = np.linspace(0, 1, preserve_size)
-    margins_to_save = margins.quantile(q=quantiles).to_numpy()
+    margins_to_save = margins.quantile(q=quantiles, interpolation="nearest").to_numpy()
     games_to_save = []
     for margin in margins_to_save:
         selected_game = rng.choice(np.array(margins.index[margins == margin]))
@@ -1225,7 +1184,9 @@ def run_simulation(matchup_df, season, sample_size, preserve_size, kenpom_tempo)
 
     # to lighten the load on the DB, we'll preserve the simulation distribution.
     # this will be a way to avoid pulling tons of data for each bracket request
-    user_breakpoints = margins.quantile(q=[0.00, 0.10, 0.25, 0.50, 0.75, 0.90, 1.00])
+    user_breakpoints = margins.quantile(
+        q=[0.00, 0.10, 0.25, 0.50, 0.75, 0.90, 1.00], interpolation="nearest"
+    )
     home_win_chance_max = len(margins.loc[margins > 0]) / len(margins)
     home_win_chance_medium = len(
         margins.loc[(user_breakpoints[0.90] >= margins) & (margins > 0)]
@@ -1242,7 +1203,7 @@ def run_simulation(matchup_df, season, sample_size, preserve_size, kenpom_tempo)
         ]
     )
     home_win_chance_median = len(
-        margins.loc[(user_breakpoints[0.50] >= margins) & (margins > 0)]
+        margins.loc[(user_breakpoints[0.50] == margins) & (margins > 0)]
     ) / len(margins.loc[(user_breakpoints[0.50] == margins)])
 
     distribution_data = {
