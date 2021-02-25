@@ -3,6 +3,7 @@ from datetime import date
 from enum import Enum
 from math import floor
 import multiprocessing
+import pathlib
 from typing import Dict
 from odmantic.model import EmbeddedModel
 import orjson
@@ -41,6 +42,31 @@ class BracketFlavor(str, Enum):
     MILD = "mild"
     MEDIUM = "medium"
     MAX = "max"
+
+
+class CBBTeam(Model):
+    Key: str
+    School: str
+    Name: str
+    GlobalTeamID: int
+    Conference: str
+    TeamLogoUrl: str
+    ShortDisplayName: str
+    Stadium: Dict
+    Season: int
+    Rk: int
+    Conf: str
+    W: int
+    L: int
+    AdjEM: float
+    AdjO: float
+    AdjD: float
+    AdjT: float
+    Luck: float
+    OppAdjEM: float
+    OppO: float
+    OppD: float
+    NCAdjEM: float
 
 
 class PlayerSeason(Model):
@@ -85,18 +111,6 @@ class KenpomTeam(Model):
     Season: FantasyDataSeason
     Rk: int
     Team: str
-    Conf: str
-    Wins: int
-    Losses: int
-    AdjEM: float
-    AdjO: float
-    AdjD: float
-    AdjT: float
-    Luck: float
-    OppAdjEM: float
-    OppO: float
-    OppD: float
-    NCAdjEM: float
 
 
 class GameSummary(EmbeddedModel):
@@ -249,6 +263,55 @@ async def k_means_players(
 
 
 @ab_api.get(
+    "/bracket/{season}/{flavor}",
+    dependencies=[Depends(oauth2_scheme)],
+)
+async def single_sim_bracket(
+    season: FantasyDataSeason,
+    flavor: BracketFlavor,
+    client: AsyncIOMotorClient = Depends(get_odm),
+):
+    # first grab an empty bracket
+    empty_bracket_df = pandas.read_csv(
+        pathlib.Path("src/db/matchup_table_2021.csv"),
+        index=["game_id"],
+    )
+    engine = AIOEngine(motor_client=client, database="autobracket")
+    game_data = [
+        [game.id, game.game_summary.home_margin]
+        async for game in engine.find(
+            SimulationRun,
+            ((SimulationRun.game_summary.season == season)),
+            sort=(SimulationRun.game_summary.home_margin),
+        )
+    ]
+
+    # convert to pandas dataframe and calculate quantiles
+    game_df = pandas.DataFrame(game_data, columns=["ObjectId", "margin"])
+    quantiles = game_df.quantile(q=[0.10, 0.25, 0.50, 0.75, 0.90])
+    # depending on what the user selected, filter the df for sampling
+    if flavor == BracketFlavor.NONE:
+        game_df = game_df.loc[game_df.margin == quantiles.loc[0.50][0]]
+    elif flavor == BracketFlavor.MILD:
+        game_df = game_df.loc[
+            game_df.margin.between(quantiles.loc[0.25][0], quantiles.loc[0.75][0])
+        ]
+    elif flavor == BracketFlavor.MEDIUM:
+        game_df = game_df.loc[
+            game_df.margin.between(quantiles.loc[0.10][0], quantiles.loc[0.90][0])
+        ]
+
+    # now sample a random game from the filtered data frame and query the DB for its full box score
+    selected_game = game_df.sample(n=1).iat[0, 0]
+
+    game_data = await engine.find_one(
+        SimulationRun, (SimulationRun.id == selected_game)
+    )
+
+    return game_data
+
+
+@ab_api.get(
     "/game/{season}/{away_team}/{home_team}/{flavor}",
     dependencies=[Depends(oauth2_scheme)],
 )
@@ -276,25 +339,25 @@ async def single_sim_game(
 
     # convert to pandas dataframe and calculate quantiles
     game_df = pandas.DataFrame(game_data, columns=["ObjectId", "margin"])
-    quantiles = game_df.quantile(q=[.10, .25, .50, .75, .90])
+    quantiles = game_df.quantile(q=[0.10, 0.25, 0.50, 0.75, 0.90])
     # depending on what the user selected, filter the df for sampling
     if flavor == BracketFlavor.NONE:
-        game_df = game_df.loc[
-            game_df.margin == quantiles.loc[.50][0]
-        ]
+        game_df = game_df.loc[game_df.margin == quantiles.loc[0.50][0]]
     elif flavor == BracketFlavor.MILD:
         game_df = game_df.loc[
-            game_df.margin.between(quantiles.loc[.25][0], quantiles.loc[.75][0])
+            game_df.margin.between(quantiles.loc[0.25][0], quantiles.loc[0.75][0])
         ]
     elif flavor == BracketFlavor.MEDIUM:
         game_df = game_df.loc[
-            game_df.margin.between(quantiles.loc[.10][0], quantiles.loc[.90][0])
+            game_df.margin.between(quantiles.loc[0.10][0], quantiles.loc[0.90][0])
         ]
 
     # now sample a random game from the filtered data frame and query the DB for its full box score
-    selected_game = game_df.sample(n=1).iat[0,0]
+    selected_game = game_df.sample(n=1).iat[0, 0]
 
-    game_data = await engine.find_one(SimulationRun, (SimulationRun.id == selected_game))
+    game_data = await engine.find_one(
+        SimulationRun, (SimulationRun.id == selected_game)
+    )
 
     return game_data
 
@@ -1535,5 +1598,67 @@ async def refresh_fd_player_season_team(
         + "?key="
         + FANTASY_DATA_KEY_FREE
     )
+
+    return {"message": "Mongo refresh complete!"}
+
+
+@ab_api.get(
+    "/FantasyDataRefresh/Teams/{season}",
+    dependencies=[Depends(oauth2_scheme)],
+)
+async def refresh_fd_teams(
+    season: FantasyDataSeason,
+    client: AsyncIOMotorClient = Depends(get_odm),
+):
+    # first we'll grab Kenpom CSV in this step, renaming a column
+    kenpom_2020_df = pandas.read_csv(
+        pathlib.Path(f"src/db/kenpom_{season}.csv"),
+    ).rename(columns={"Team": "kenpom_team"})
+    # mapping table of Kenpom names to FantasyData.io names
+    school_names_df = pandas.read_csv(
+        pathlib.Path(f"src/db/school_names.csv"),
+    ).rename(columns={"Team": "kenpom_team"})
+    # join kenpom data to map table
+    kenpom_mapped_df = (
+        school_names_df.merge(kenpom_2020_df, on="kenpom_team", how="inner")
+        .rename(columns={"fd_team_id": "TeamID"})
+        .set_index("TeamID")
+    )
+
+    # read fantasydata
+    r = requests.get(
+        "https://api.sportsdata.io/api/cbb/fantasy/json/Teams"
+        + "?key="
+        + FANTASY_DATA_KEY_FREE
+    )
+
+    # read teams table, set index
+    teams_df = pandas.DataFrame(r.json()).set_index("TeamID")
+
+    # drop columns we don't need, then teams with no conference
+    teams_df.drop(
+        columns=[
+            "Active",
+            "ApRank",
+            "Wins",
+            "Losses",
+            "ConferenceWins",
+            "ConferenceLosses",
+        ],
+        inplace=True,
+    )
+    teams_df.dropna(inplace=True)
+
+    # merge kenpom and fd, then drop columns that were only needed for mapping
+    teams_df = (
+        teams_df.join(kenpom_mapped_df, how="inner")
+        .drop(columns=["fd_key", "fd_school", "fd_name", "kenpom_team"])
+        .convert_dtypes()
+    )
+
+    # back to json for writing to DB. reset index so TeamID makes it in
+    engine = AIOEngine(motor_client=client, database="autobracket")
+    p = orjson.loads(teams_df.to_json(orient="records"))
+    await engine.save_all([CBBTeam(**doc) for doc in p])
 
     return {"message": "Mongo refresh complete!"}

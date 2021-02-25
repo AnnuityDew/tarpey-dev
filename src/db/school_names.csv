@@ -1,0 +1,358 @@
+fd_team_id,fd_key,fd_school,fd_name,kenpom_team
+1,SMU,SMU,Mustangs,SMU
+2,TEMPL,Temple,Owls,Temple
+3,UCONN,Connecticut,Huskies,Connecticut
+4,CIN,Cincinnati,Bearcats,Cincinnati
+5,TULSA,Tulsa,Golden Hurricane,Tulsa
+6,HOU,Houston,Cougars,Houston
+7,MPHS,Memphis,Tigers,Memphis
+8,UCF,UCF,Knights,UCF
+9,ECAR,East Carolina,Pirates,East Carolina
+10,TULANE,Tulane,Green Wave,Tulane
+11,SFL,South Florida,Bulls,South Florida
+12,STBR,Stony Brook,Seawolves,Stony Brook
+13,ALBNY,Albany,Great Danes,Albany
+14,NHAMP,New Hampshire,Wildcats,New Hampshire
+15,VERM,Vermont,Catamounts,Vermont
+16,MASLOW,Massachusetts-Lowell,River Hawks,UMass Lowell
+17,MAINE,Maine,Black Bears,Maine
+18,HARTFD,Hartford,Hawks,Hartford
+19,UMBC,UMBC,Retrievers,UMBC
+20,BING,Binghamton,Bearcats,Binghamton
+21,NCAR,North Carolina,Tar Heels,North Carolina
+22,VIR,Virginia,Cavaliers,Virginia
+23,MIA,Miami (FL),Hurricanes,Miami FL
+24,LOU,Louisville,Cardinals,Louisville
+25,ND,Notre Dame,Fighting Irish,Notre Dame
+26,DUKE,Duke,Blue Devils,Duke
+27,CLMSN,Clemson,Tigers,Clemson
+28,PITT,Pittsburgh,Panthers,Pittsburgh
+29,FLST,Florida State,Seminoles,Florida St.
+30,SYRA,Syracuse,Orange,Syracuse
+31,VTECH,Virginia Tech,Hokies,Virginia Tech
+32,GTECH,Georgia Tech,Yellow Jackets,Georgia Tech
+33,NCST,North Carolina State,Wolfpack,N.C. State
+34,WAKE,Wake Forest,Demon Deacons,Wake Forest
+35,BOSCOL,Boston College,Eagles,Boston College
+36,NFL,North Florida,Ospreys,North Florida
+37,JAX,Jacksonville,Dolphins,Jacksonville
+38,FLGC,FGCU,Eagles,Florida Gulf Coast
+39,NJIT,NJIT,Highlanders,NJIT
+40,LIPSC,Lipscomb,Bisons,Lipscomb
+41,STETSN,Stetson,Hatters,Stetson
+42,KENEST,Kennesaw State,Owls,Kennesaw St.
+43,SCUP,USC Upstate,Spartans,USC Upstate
+44,DAY,Dayton,Flyers,Dayton
+45,VCU,VCU,Rams,VCU
+46,STJOE,Saint Joseph's,Hawks,Saint Joseph's
+47,STBON,St. Bonaventure,Bonnies,St. Bonaventure
+48,GEOWS,George Washington,Colonials,George Washington
+49,DAVID,Davidson,Wildcats,Davidson
+50,RI,Rhode Island,Rams,Rhode Island
+51,DUQ,Duquesne,Dukes,Duquesne
+52,RICH,Richmond,Spiders,Richmond
+53,FORDM,Fordham,Rams,Fordham
+54,STLOU,Saint Louis,Billikens,Saint Louis
+55,UMASS,Massachusetts,Minutemen,Massachusetts
+56,GMSN,George Mason,Patriots,George Mason
+57,LASAL,La Salle,Explorers,La Salle
+58,VILL,Villanova,Wildcats,Villanova
+59,XAV,Xavier,Musketeers,Xavier
+60,SETON,Seton Hall,Pirates,Seton Hall
+61,CREIGH,Creighton,Bluejays,Creighton
+62,GEORGE,Georgetown,Hoyas,Georgetown
+63,PROV,Providence,Friars,Providence
+64,BUTL,Butler,Bulldogs,Butler
+65,MARQ,Marquette,Golden Eagles,Marquette
+66,DEPAUL,DePaul,Blue Demons,DePaul
+67,STJOHN,St. John's,Red Storm,St. John's
+68,MONT,Montana,Grizzlies,Montana
+69,WEBST,Weber State,Wildcats,Weber St.
+70,EWASH,Eastern Washington,Eagles,Eastern Washington
+71,NDAK,North Dakota,Fighting Hawks,North Dakota
+72,IDHST,Idaho State,Bengals,Idaho St.
+73,IDAHO,Idaho,Vandals,Idaho
+74,MONST,Montana State,Bobcats,Montana St.
+75,NCOL,Northern Colorado,Bears,Northern Colorado
+76,PORTST,Portland State,Vikings,Portland St.
+77,SACST,Sacramento State,Hornets,Sacramento St.
+78,SUTAH,Southern Utah,Thunderbirds,Southern Utah
+79,NARZ,Northern Arizona,Lumberjacks,Northern Arizona
+80,NCASHE,UNC Asheville,Bulldogs,UNC Asheville
+81,COAST,Coastal Carolina,Chanticleers,Coastal Carolina
+82,WINTH,Winthrop,Eagles,Winthrop
+83,GARDWB,Gardner-Webb,Runnin' Bulldogs,Gardner Webb
+84,LIBRTY,Liberty,Flames,Liberty
+85,HPNT,High Point,Panthers,High Point
+86,RADF,Radford,Highlanders,Radford
+87,LONGWD,Longwood,Lancers,Longwood
+88,CHSOU,Charleston Southern,Buccaneers,Charleston Southern
+89,PRESB,Presbyterian,Blue Hose,Presbyterian
+90,CAMP,Campbell,Fighting Camels,Campbell
+91,IOWA,Iowa,Hawkeyes,Iowa
+92,MARY,Maryland,Terrapins,Maryland
+93,IND,Indiana,Hoosiers,Indiana
+94,PUR,Purdue,Boilermakers,Purdue
+95,MICH,Michigan,Wolverines,Michigan
+96,WISC,Wisconsin,Badgers,Wisconsin
+97,MST,Michigan State,Spartans,Michigan St.
+98,OHIOST,Ohio State,Buckeyes,Ohio St.
+99,NEBR,Nebraska,Cornhuskers,Nebraska
+100,NW,Northwestern,Wildcats,Northwestern
+101,PENNST,Penn State,Nittany Lions,Penn St.
+102,ILL,Illinois,Fighting Illini,Illinois
+103,RUTGER,Rutgers,Scarlet Knights,Rutgers
+104,MINNST,Minnesota,Golden Gophers,Minnesota
+105,OKL,Oklahoma,Sooners,Oklahoma
+106,KAN,Kansas,Jayhawks,Kansas
+107,WVIR,West Virginia,Mountaineers,West Virginia
+108,BAYL,Baylor,Bears,Baylor
+109,TX,Texas,Longhorns,Texas
+110,IOWAST,Iowa State,Cyclones,Iowa St.
+111,TXTECH,Texas Tech,Red Raiders,Texas Tech
+112,KANST,Kansas State,Wildcats,Kansas St.
+113,OKST,Oklahoma State,Cowboys,Oklahoma St.
+114,TCU,TCU,Horned Frogs,TCU
+115,HAWAII,Hawaii,Rainbow Warriors,Hawaii
+116,UCIRV,UC Irvine,Anteaters,UC Irvine
+117,LBST,Long Beach State,49ers,Long Beach St.
+118,UCDV,UC Davis,Aggies,UC Davis
+119,USCB,UC Santa Barbara,Gauchos,UC Santa Barbara
+120,UCRVS,UC Riverside,Highlanders,UC Riverside
+121,CSUNR,CSUN,Matadors,Cal St. Northridge
+122,CALPOL,Cal Poly,Mustangs,Cal Poly
+123,CSUFL,Cal State Fullerton,Titans,Cal St. Fullerton
+124,NCW,UNCW,Seahawks,UNC Wilmington
+125,WM,William & Mary,Tribe,William & Mary
+126,JMAD,James Madison,Dukes,James Madison
+127,TOWS,Towson,Tigers,Towson
+128,HOFST,Hofstra,Pride,Hofstra
+129,CHAR,Charleston,Cougars,Charleston
+130,ELON,Elon,Phoenix,Elon
+131,NEAST,Northeastern,Huskies,Northeastern
+132,DREXEL,Drexel,Dragons,Drexel
+133,DEL,Delaware,Fightin' Blue Hens,Delaware
+134,UAB,UAB,Blazers,UAB
+135,MTNST,Middle Tennessee,Blue Raiders,Middle Tennessee
+136,MARSH,Marshall,Thundering Herd,Marshall
+137,LOUTCH,Louisiana Tech,Bulldogs,Louisiana Tech
+138,OLD,Old Dominion,Monarchs,Old Dominion
+139,UTEP,UTEP,Miners,UTEP
+140,FLINT,FIU,Golden Panthers,FIU
+141,NTX,North Texas,Mean Green,North Texas
+142,CHARLT,Charlotte,49ers,Charlotte
+143,SOUMIS,Southern Miss,Golden Eagles,Southern Miss
+144,WKENT,Western Kentucky,Hilltoppers,Western Kentucky
+145,FLATL,Florida Atlantic,Owls,Florida Atlantic
+146,RICE,Rice,Owls,Rice
+147,UTSA,UTSA,Roadrunners,UTSA
+148,VALP,Valparaiso,Brown and Gold,Valparaiso
+149,OAK,Oakland,Golden Grizzlies,Oakland
+150,WRGHT,Wright State,Raiders,Wright St.
+151,WBD,Milwaukee,Panthers,Milwaukee
+152,GB,Green Bay,Phoenix,Green Bay
+153,DET,Detroit,Titans,Detroit
+154,NKENT,Northern Kentucky,Norse,Northern Kentucky
+155,YNGST,Youngstown State,Penguins,Youngstown St.
+156,CLVST,Cleveland State,Vikings,Cleveland St.
+157,ILLCHI,UIC,Flames,Illinois Chicago
+158,YALE,Yale,Bulldogs,Yale
+159,COLMB,Columbia,Lions,Columbia
+160,PRNCE,Princeton,Tigers,Princeton
+161,PENN,Penn,Quakers,Penn
+162,CORNEL,Cornell,Big Red,Cornell
+163,BROWN,Brown,Bears,Brown
+164,HARVRD,Harvard,Crimson,Harvard
+165,DART,Dartmouth,Big Green,Dartmouth
+166,MONM,Monmouth,Hawks,Monmouth
+167,IONA,Iona,Gaels,Iona
+168,SIENA,Siena,Saints,Siena
+169,STPETE,Saint Peter's,Peacocks,Saint Peter's
+170,FAIR,Fairfield,Stags,Fairfield
+171,MANH,Manhattan,Jaspers,Manhattan
+172,CANS,Canisius,Golden Griffins,Canisius
+173,RIDER,Rider,Broncs,Rider
+174,QUIN,Quinnipiac,Bobcats,Quinnipiac
+175,NIAGRA,Niagara,Purple Eagles,Niagara
+176,MARIST,Marist,Red Foxes,Marist
+177,AKRON,Akron,Zips,Akron
+178,KENTST,Kent State,Golden Flashes,Kent St.
+179,BUF,Buffalo,Bulls,Buffalo
+180,OHIO,Ohio,Bobcats,Ohio
+181,BOWLGR,Bowling Green,Falcons,Bowling Green
+182,MIAOH,Miami (OH),RedHawks,Miami OH
+183,TOLEDO,Toledo,Rockets,Toledo
+184,BALLST,Ball State,Cardinals,Ball St.
+185,CMICH,Central Michigan,Chippewas,Central Michigan
+186,NILL,Northern Illinois,Huskies,Northern Illinois
+187,EMICH,Eastern Michigan,Eagles,Eastern Michigan
+188,WMICH,Western Michigan,Broncos,Western Michigan
+189,HAMP,Hampton,Pirates,Hampton
+190,SCARST,South Carolina State,Bulldogs,South Carolina St.
+191,NORFST,Norfolk State,Spartans,Norfolk St.
+192,BCOOK,Bethune-Cookman,Wildcats,Bethune Cookman
+193,MDES,Maryland Eastern Shore,Hawks,Maryland Eastern Shore
+195,HOWRD,Howard,Bison,Howard
+196,NCAT,North Carolina A&T,Aggies,North Carolina A&T
+197,NCC,North Carolina Central,Eagles,North Carolina Central
+198,FLAM,Florida A&M,Rattlers,Florida A&M
+199,MORGST,Morgan State,Bears,Morgan St.
+200,COPPST,Coppin State,Eagles,Coppin St.
+201,DELST,Delaware State,Hornets,Delaware St.
+202,WICHST,Wichita State,Shockers,Wichita St.
+203,EVANS,Evansville,Aces,Evansville
+204,ILLST,Illinois State,Redbirds,Illinois St.
+205,SILL,Southern Illinois,Salukis,Southern Illinois
+206,NIOWA,UNI,Panthers,Northern Iowa
+207,INDST,Indiana State,Sycamores,Indiana St.
+208,MSRST,Missouri State,Bears,Missouri St.
+209,LOYCH,Loyola Chicago,Ramblers,Loyola Chicago
+210,BRADLY,Bradley,Braves,Bradley
+211,DRAKE,Drake,Bulldogs,Drake
+212,SDST,San Diego State,Aztecs,San Diego St.
+213,FREST,Fresno State,Bulldogs,Fresno St.
+214,NMX,New Mexico,Lobos,New Mexico
+215,BOISE,Boise State,Broncos,Boise St.
+216,NEVADA,Nevada,Wolf Pack,Nevada
+217,COLST,Colorado State,Rams,Colorado St.
+218,UNLV,UNLV,Runnin' Rebels,UNLV
+219,WYOM,Wyoming,Cowboys,Wyoming
+220,UTAHST,Utah State,Aggies,Utah St.
+221,AIRF,Air Force,Falcons,Air Force
+222,SJST,San Jose State,Spartans,San Jose St.
+223,WAG,Wagner,Seahawks,Wagner
+224,FAIRDK,Fairleigh Dickinson,Knights,Fairleigh Dickinson
+225,STFPA,Saint Francis U,Red Flash,St. Francis PA
+226,MSTM,Mount St. Mary's,Mountaineers,Mount St. Mary's
+227,SACRED,Sacred Heart,Pioneers,Sacred Heart
+228,STF,St. Francis Brooklyn,Terriers,St. Francis NY
+229,LIUB,LIU Brooklyn,Sharks,LIU
+230,ROBMS,Robert Morris,Colonials,Robert Morris
+231,BRYANT,Bryant,Bulldogs,Bryant
+232,CENCON,Central Connecticut State,Blue Devils,Central Connecticut
+233,BELM,Belmont,Bruins,Belmont
+234,TENTCH,Tennessee Tech,Golden Eagles,Tennessee Tech
+235,TENST,Tennessee State,Tigers,Tennessee St.
+236,MHST,Morehead State,Eagles,Morehead St.
+237,EKENT,Eastern Kentucky,Colonels,Eastern Kentucky
+238,JAXST,Jacksonville State,Gamecocks,Jacksonville St.
+239,EILL,Eastern Illinois,Panthers,Eastern Illinois
+240,MURST,Murray State,Racers,Murray St.
+241,TMRT,UT Martin,Skyhawks,Tennessee Martin
+242,AUSP,Austin Peay,Governors,Austin Peay
+243,SEMST,Southeast Missouri State,Redhawks,Southeast Missouri St.
+244,SIUE,SIUE,Cougars,SIU Edwardsville
+245,ORE,Oregon,Ducks,Oregon
+246,USC,USC,Trojans,USC
+247,ARZ,Arizona,Wildcats,Arizona
+248,UTAH,Utah,Runnin' Utes,Utah
+249,WASH,Washington,Huskies,Washington
+250,COL,Colorado,Buffaloes,Colorado
+251,CAH,California,Golden Bears,California
+252,OREGST,Oregon State,Beavers,Oregon St.
+253,UCLA,UCLA,Bruins,UCLA
+254,STAN,Stanford,Cardinal,Stanford
+255,ARZST,Arizona State,Sun Devils,Arizona St.
+256,WASHST,Washington State,Cougars,Washington St.
+257,BUCK,Bucknell,Bison,Bucknell
+258,NAVY,Navy,Midshipmen,Navy
+259,BOSTU,Boston University,Terriers,Boston University
+260,LEHI,Lehigh,Mountain Hawks,Lehigh
+261,COLG,Colgate,Raiders,Colgate
+262,LOYMD,Loyola Maryland,Greyhounds,Loyola MD
+263,ARMY,Army West Point,Black Knights,Army
+264,HOLY,Holy Cross,Crusaders,Holy Cross
+265,AMERCN,American University,Eagles,American
+266,LAFAY,Lafayette,Leopards,Lafayette
+267,SC,South Carolina,Gamecocks,South Carolina
+268,UK,Kentucky,Wildcats,Kentucky
+269,LSU,LSU,Tigers,LSU
+270,TXAM,Texas A&M,Aggies,Texas A&M
+271,FL,Florida,Gators,Florida
+272,GA,Georgia,Bulldogs,Georgia
+273,VAND,Vanderbilt,Commodores,Vanderbilt
+274,MISS,Ole Miss,Rebels,Mississippi
+275,ALA,Alabama,Crimson Tide,Alabama
+276,ARK,Arkansas,Razorbacks,Arkansas
+277,TENN,Tennessee,Volunteers,Tennessee
+278,MSPST,Mississippi State,Bulldogs,Mississippi St.
+279,AUBRN,Auburn,Tigers,Auburn
+280,MISSR,Missouri,Tigers,Missouri
+281,CHAT,Chattanooga,Mocs,Chattanooga
+282,ETNST,East Tennessee State,Buccaneers,East Tennessee St.
+283,FURMAN,Furman,Paladins,Furman
+284,MERC,Mercer,Bears,Mercer
+285,WOFF,Wofford,Terriers,Wofford
+286,NCG,UNCG,Spartans,UNC Greensboro
+287,WCAR,Western Carolina,Catamounts,Western Carolina
+288,CITA,Citadel,Bulldogs,The Citadel
+289,SAMF,Samford,Bulldogs,Samford
+290,VAMIL,VMI,Keydets,VMI
+291,SFAUS,Stephen F. Austin,Lumberjacks,Stephen F. Austin
+292,TAMU,Texas A&M-Corpus Christi,Islanders,Texas A&M Corpus Chris
+293,HOUBAP,Houston Baptist,Huskies,Houston Baptist
+294,INCAR,Incarnate Word,Cardinals,Incarnate Word
+295,SMHO,Sam Houston State,Bearkats,Sam Houston St.
+296,ABCHR,Abilene Christian,Wildcats,Abilene Christian
+297,NO,New Orleans,Privateers,New Orleans
+298,CARK,Central Arkansas,Bears,Central Arkansas
+299,MCNST,McNeese State,Cowboys,McNeese St.
+300,SELOU,Southeastern Louisiana,Lions,Southeastern Louisiana
+301,NWST,Northwestern State,Demons,Northwestern St.
+302,NICHLS,Nicholls,Colonels,Nicholls St.
+303,LAMAR,Lamar,Cardinals,Lamar
+304,TXS,Texas Southern,Tigers,Texas Southern
+305,SOUTH,Southern University,Jaguars,Southern
+306,JACKST,Jackson State,Tigers,Jackson St.
+307,ALCST,Alcorn State,Braves,Alcorn St.
+308,MSVLST,Mississippi Valley State,Delta Devils,Mississippi Valley St.
+309,ALAAM,Alabama A&M,Bulldogs,Alabama A&M
+310,ARPB,UAPB,Golden Lions,Arkansas Pine Bluff
+311,ALAST,Alabama State,Hornets,Alabama St.
+312,GRMBST,Grambling State,Tigers,Grambling St.
+313,PVAM,Prairie View A&M,Panthers,Prairie View A&M
+314,SDKST,South Dakota State,Jackrabbits,South Dakota St.
+315,IPFW,Purdue Fort Wayne,Mastodons,Purdue Fort Wayne
+316,NEOM,Omaha,Mavericks,Nebraska Omaha
+317,IUPUI,IUPUI,Jaguars,IUPUI
+318,NDKST,North Dakota State,Bison,North Dakota St.
+319,DEN,Denver,Pioneers,Denver
+320,ORAL,Oral Roberts,Golden Eagles,Oral Roberts
+321,SDAK,South Dakota,Coyotes,South Dakota
+322,WILL,Western Illinois,Leathernecks,Western Illinois
+323,ARLR,Little Rock,Trojans,Little Rock
+324,LOULAF,Louisiana-Lafayette,Ragin' Cajuns,Lafayette
+325,TXA,UT Arlington,Mavericks,UT Arlington
+326,LAMON,Louisiana-Monroe,Warhawks,Louisiana Monroe
+327,ARKST,Arkansas State,Red Wolves,Arkansas St.
+328,GAST,Georgia State,Panthers,Georgia St.
+329,GAS,Georgia Southern,Eagles,Georgia Southern
+330,SALA,South Alabama,Jaguars,South Alabama
+331,APPLST,Appalachian State,Mountaineers,Appalachian St.
+332,TXST,Texas State,Bobcats,Texas St.
+333,TROY,Troy,Trojans,Troy
+334,GNZG,Gonzaga,Bulldogs,Gonzaga
+335,STMRY,Saint Mary's,Gaels,Saint Mary's
+336,BYU,BYU,Cougars,BYU
+337,PEPP,Pepperdine,Waves,Pepperdine
+338,SF,San Francisco,Dons,San Francisco
+339,PACFC,Pacific,Tigers,Pacific
+340,PORT,Portland,Pilots,Portland
+341,SANCLR,Santa Clara,Broncos,Santa Clara
+342,SD,San Diego,Toreros,San Diego
+343,LOYMRY,Loyola Marymount,Lions,Loyola Marymount
+344,NMXST,New Mexico State,Aggies,New Mexico St.
+345,GCAN,Grand Canyon,Antelopes,Grand Canyon
+346,CSU,Bakersfield,Roadrunners,Cal St. Bakersfield
+347,SEA,Seattle,Redhawks,Seattle
+348,UTAHV,Utah Valley,Wolverines,Utah Valley
+350,UTRGV,Texas-Rio Grande Valley,Vaqueros,UT Rio Grande Valley
+351,CHIST,Chicago St.,Cougars,Chicago St.
+362,UMKC,Kansas City,Roos,UMKC
+394,CABAP,California Baptist,Lancers,Cal Baptist
+396,NAL,North Alabama,Lions,North Alabama
+750,DXST,Dixie State,Trailblazers,Dixie St.
+817,MERRI,Merrimack College,Warriors,Merrimack
+1007,UCSD,California-San Diego,Tritons,UC San Diego
+1024,TARL,Tarleton State,Texans,Tarleton St.
+1025,BELLA,Bellarmine,Knights,Bellarmine
