@@ -61,6 +61,9 @@ we'll never stop learning pandas
 https://stackoverflow.com/questions/53927460/select-rows-in-pandas-multiindex-dataframe
 https://stackoverflow.com/questions/26046208/normalize-dataframe-by-group
 
+BFG
+https://rtyley.github.io/bfg-repo-cleaner/
+
 licenses
 For autobracket, specifically the scatter plot:
 https://observablehq.com/@d3/brushable-scatterplot-matrix

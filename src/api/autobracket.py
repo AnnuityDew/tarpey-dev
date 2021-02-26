@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Depends, Path
 from motor.motor_asyncio import AsyncIOMotorClient
 import numpy as np
 import pandas
-from odmantic import AIOEngine, Field, Model
+from odmantic import AIOEngine, Field, Model, query
 import requests
 from scipy import stats
 from sklearn.cluster import KMeans
@@ -108,8 +108,10 @@ class PlayerSeason(Model):
 
 
 class GameSummary(EmbeddedModel):
+    season: str
     away_team: str
     home_team: str
+    neutral_site: bool
     home_margin: int
     total_possessions: int
 
@@ -123,6 +125,7 @@ class SimulationRun(Model):
 class SimulationDist(Model):
     away_team: str
     home_team: str
+    season: str
     home_win_chance_max: float
     max_margin_top: int
     max_margin_bottom: int
@@ -133,7 +136,8 @@ class SimulationDist(Model):
     mild_margin_top: int
     mild_margin_bottom: int
     home_win_chance_median: float
-    median_margin: int
+    median_margin_top: int
+    median_margin_bottom: int
 
 
 @ab_api.get("/stats/{season}/all", dependencies=[Depends(oauth2_scheme)])
@@ -284,41 +288,173 @@ async def single_sim_bracket(
     # first grab an empty bracket
     empty_bracket_df = pandas.read_csv(
         pathlib.Path("src/db/matchup_table_2021.csv"),
-        index=["game_id"],
+        index_col="game_id",
+    ).convert_dtypes()
+
+    # auto dtypes are mostly good, but home win chance needs to be a float
+    empty_bracket_df["home_win_chance"] = pandas.to_numeric(
+        empty_bracket_df["home_win_chance"], downcast="float"
     )
     engine = AIOEngine(motor_client=client, database="autobracket")
-    game_data = [
-        [game.id, game.game_summary.home_margin]
-        async for game in engine.find(
-            SimulationRun,
-            ((SimulationRun.game_summary.season == season)),
-            sort=(SimulationRun.game_summary.home_margin),
-        )
-    ]
+    distribution_data = [matchup.doc() async for matchup in engine.find(SimulationDist)]
+    distribution_df = pandas.DataFrame(distribution_data)
 
-    # convert to pandas dataframe and calculate quantiles
-    game_df = pandas.DataFrame(game_data, columns=["ObjectId", "margin"])
-    quantiles = game_df.quantile(q=[0.10, 0.25, 0.50, 0.75, 0.90])
-    # depending on what the user selected, filter the df for sampling
+    # set list of columns needed based on bracket options
     if flavor == BracketFlavor.NONE:
-        game_df = game_df.loc[game_df.margin == quantiles.loc[0.50][0]]
+        needed_columns = ["home_win_chance_median", "median_margin_top", "median_margin_bottom"]
     elif flavor == BracketFlavor.MILD:
-        game_df = game_df.loc[
-            game_df.margin.between(quantiles.loc[0.25][0], quantiles.loc[0.75][0])
+        needed_columns = [
+            "home_win_chance_mild",
+            "mild_margin_top",
+            "mild_margin_bottom",
         ]
     elif flavor == BracketFlavor.MEDIUM:
-        game_df = game_df.loc[
-            game_df.margin.between(quantiles.loc[0.10][0], quantiles.loc[0.90][0])
+        needed_columns = [
+            "home_win_chance_medium",
+            "medium_margin_top",
+            "medium_margin_bottom",
         ]
+    elif flavor == BracketFlavor.MAX:
+        needed_columns = ["home_win_chance_max", "max_margin_top", "max_margin_bottom"]
+    else:
+        raise HTTPException(
+            status_code=400, detail=f"Can't process this type of bracket! {flavor}"
+        )
 
-    # now sample a random game from the filtered data frame and query the DB for its full box score
-    selected_game = game_df.sample(n=1).iat[0, 0]
+    # generate game outcomes
+    rng = np.random.default_rng()
+    empty_bracket_df["sim_reroll"] = rng.random(size=len(empty_bracket_df))
 
-    game_data = await engine.find_one(
-        SimulationRun, (SimulationRun.id == selected_game)
+    # make necessary columns
+    for column in needed_columns:
+        empty_bracket_df[column] = 0.0
+
+    # empty list for query data to be used later to pull box scores
+    query_data = []
+
+    for x in empty_bracket_df.index:
+        away_team = empty_bracket_df.loc[x, "away_team"]
+        home_team = empty_bracket_df.loc[x, "home_team"]
+        away_seed = empty_bracket_df.loc[x, "away_seed"]
+        home_seed = empty_bracket_df.loc[x, "home_seed"]
+        advancing_location = empty_bracket_df.loc[x, "advance_to"]
+        # bracket is home/away agnostic this year, so just filter for either combo
+        filtered_df = distribution_df.loc[
+            (
+                (distribution_df.away_team == away_team)
+                & (distribution_df.home_team == home_team)
+            )
+            | (
+                (distribution_df.away_team == home_team)
+                & (distribution_df.home_team == away_team)
+            )
+        ].copy()
+        # make sure we're not pulling the inverted outcome
+        if home_team == filtered_df.at[list(filtered_df.index)[0], "home_team"]:
+            empty_bracket_df.loc[x, "home_win_chance"] = filtered_df.at[
+                list(filtered_df.index)[0], needed_columns[0]
+            ]
+        else:
+            empty_bracket_df.loc[x, "home_win_chance"] = (
+                1 - filtered_df.at[list(filtered_df.index)[0], needed_columns[0]]
+            )
+        if (
+            empty_bracket_df.at[x, "sim_reroll"]
+            < empty_bracket_df.at[x, "home_win_chance"]
+        ):
+            game_winner = home_team
+            winner_seed = home_seed
+        else:
+            game_winner = away_team
+            winner_seed = away_seed
+
+        # set the three dynamic columns so we can lookup a game later
+        if home_team == filtered_df.at[list(filtered_df.index)[0], "home_team"]:
+            empty_bracket_df.loc[x, needed_columns[0]] = filtered_df.at[
+                list(filtered_df.index)[0], needed_columns[0]
+            ]
+            empty_bracket_df.loc[x, needed_columns[1]] = filtered_df.at[
+                list(filtered_df.index)[0], needed_columns[1]
+            ]
+            empty_bracket_df.loc[x, needed_columns[2]] = filtered_df.at[
+                list(filtered_df.index)[0], needed_columns[2]
+            ]
+        else:
+            # flip values where the away tournament team is the home simulation team
+            empty_bracket_df.loc[x, needed_columns[0]] = 1 - filtered_df.at[
+                list(filtered_df.index)[0], needed_columns[0]
+            ]
+            # flip high and low values AND the sign
+            empty_bracket_df.loc[x, needed_columns[1]] = -1 * filtered_df.at[
+                list(filtered_df.index)[0], needed_columns[2]
+            ]
+            empty_bracket_df.loc[x, needed_columns[2]] = -1 * filtered_df.at[
+                list(filtered_df.index)[0], needed_columns[1]
+            ]
+
+        # time to add query data for looking up box scores later
+        if game_winner == home_team:
+            home_margin_range_low = 0
+            home_margin_range_high = empty_bracket_df.loc[x, needed_columns[1]]
+        else:
+            home_margin_range_low = empty_bracket_df.loc[x, needed_columns[2]]
+            home_margin_range_high = 0
+
+        query_expression_list_normal = [
+            (SimulationRun.game_summary.away_team == away_team),
+            (SimulationRun.game_summary.home_team == home_team),
+            (SimulationRun.game_summary.home_margin >= home_margin_range_low),
+            (SimulationRun.game_summary.home_margin <= home_margin_range_high),
+        ]
+        normal_query = query.and_(*query_expression_list_normal)
+        # reversed version to find games where the home and away teams are flipped
+        query_expression_list_reversed = [
+            (SimulationRun.game_summary.away_team == home_team),
+            (SimulationRun.game_summary.home_team == away_team),
+            (SimulationRun.game_summary.home_margin >= (-1 * home_margin_range_high)),
+            (SimulationRun.game_summary.home_margin <= (-1 * home_margin_range_low)),
+        ]
+        reversed_query = query.and_(*query_expression_list_reversed)
+        combined_query = query.or_(normal_query, reversed_query)
+        query_data.append(combined_query)
+
+        # advance the winner to the next round, unless it's the title game. then it's over!
+        empty_bracket_df.loc[x, "sim_winner"] = game_winner
+        if advancing_location == 68:
+            break
+        else:
+            if empty_bracket_df.at[advancing_location, "away_team"] == "TBD":
+                empty_bracket_df.loc[advancing_location, "away_team"] = game_winner
+                empty_bracket_df.loc[advancing_location, "away_seed"] = winner_seed
+            else:
+                empty_bracket_df.loc[advancing_location, "home_team"] = game_winner
+                empty_bracket_df.loc[advancing_location, "home_seed"] = winner_seed
+
+    # construct the query of all applicable box scores
+    full_bracket_query = query.or_(*query_data)
+    eligible_box_scores = await engine.find(
+        SimulationRun,
+        full_bracket_query,
     )
+    box_score_data = [game.doc() for game in eligible_box_scores]
+    box_score_game_summaries = [game["game_summary"] for game in box_score_data]
+    # we need to convert objectid to string here. can't output objectid to json natively
+    box_score_ids = [str(game["_id"]) for game in box_score_data]
+    # index will be object IDs
+    box_score_game_summary_df = pandas.DataFrame(box_score_game_summaries).set_index(
+        ["away_team", "home_team"]
+    )
+    box_score_game_summary_df["sim_ObjectId"] = box_score_ids
+    selected_box_scores = box_score_game_summary_df.groupby(level=[0, 1]).sample(n=1)
 
-    return game_data
+    # final returnable DF!
+    bracket_df = empty_bracket_df.merge(selected_box_scores, left_on=["away_team", "home_team"], right_index=True, how="left")
+    bracket_df_reversed = empty_bracket_df.merge(selected_box_scores, left_on=["home_team", "away_team"], right_index=True, how="left")
+    bracket_df.update(bracket_df_reversed)
+
+    # bracket to JSON
+    bracket_json = orjson.loads(bracket_df.to_json(orient="records", default_handler=orjson.dumps))
+    return bracket_json
 
 
 @ab_api.get(
@@ -349,10 +485,12 @@ async def single_sim_game(
 
     # convert to pandas dataframe and calculate quantiles
     game_df = pandas.DataFrame(game_data, columns=["ObjectId", "margin"])
-    quantiles = game_df.quantile(q=[0.10, 0.25, 0.50, 0.75, 0.90])
+    quantiles = game_df.quantile(q=[0.10, 0.25, 0.40, 0.60, 0.75, 0.90])
     # depending on what the user selected, filter the df for sampling
     if flavor == BracketFlavor.NONE:
-        game_df = game_df.loc[game_df.margin == quantiles.loc[0.50][0]]
+        game_df = game_df.loc[
+            game_df.margin.between(quantiles.loc[0.40][0], quantiles.loc[0.60][0])
+        ]
     elif flavor == BracketFlavor.MILD:
         game_df = game_df.loc[
             game_df.margin.between(quantiles.loc[0.25][0], quantiles.loc[0.75][0])
@@ -408,7 +546,7 @@ async def full_game_simulation(
     away_team: str,
     home_team: str,
     sample_size: int = Path(..., gt=0, le=1000),
-    preserve_size: int = Path(..., gt=0, le=100),
+    preserve_size: int = Path(..., ge=10, le=100),
     client: AsyncIOMotorClient = Depends(get_odm),
 ):
     # performance timer
@@ -1087,7 +1225,7 @@ def run_simulation(matchup_df, season, sample_size, preserve_size, kenpom_tempo)
         def_reb_games_df["sim_defensive_rebounds"] += def_reb_array
         matchup_df.update(off_reb_games_df)
         matchup_df.update(def_reb_games_df)
-        
+
         # update clocks in all games
         time_remaining -= possession_length
         # change possession in all games where there was a possession change
@@ -1185,30 +1323,35 @@ def run_simulation(matchup_df, season, sample_size, preserve_size, kenpom_tempo)
     # to lighten the load on the DB, we'll preserve the simulation distribution.
     # this will be a way to avoid pulling tons of data for each bracket request
     user_breakpoints = margins.quantile(
-        q=[0.00, 0.10, 0.25, 0.50, 0.75, 0.90, 1.00], interpolation="nearest"
+        q=[0.00, 0.10, 0.25, 0.40, 0.60, 0.75, 0.90, 1.00], interpolation="nearest"
     )
     home_win_chance_max = len(margins.loc[margins > 0]) / len(margins)
     home_win_chance_medium = len(
-        margins.loc[(user_breakpoints[0.90] >= margins) & (margins > 0)]
+        margins.loc[(user_breakpoints[0.90] >= margins) & (margins >= user_breakpoints[0.10]) & (margins > 0)]
     ) / len(
         margins.loc[
             (user_breakpoints[0.90] >= margins) & (margins >= user_breakpoints[0.10])
         ]
     )
     home_win_chance_mild = len(
-        margins.loc[(user_breakpoints[0.75] >= margins) & (margins > 0)]
+        margins.loc[(user_breakpoints[0.75] >= margins) & (margins >= user_breakpoints[0.25]) & (margins > 0)]
     ) / len(
         margins.loc[
             (user_breakpoints[0.75] >= margins) & (margins >= user_breakpoints[0.25])
         ]
     )
     home_win_chance_median = len(
-        margins.loc[(user_breakpoints[0.50] == margins) & (margins > 0)]
-    ) / len(margins.loc[(user_breakpoints[0.50] == margins)])
+        margins.loc[(user_breakpoints[0.60] >= margins) & (margins >= user_breakpoints[0.40]) & (margins > 0)]
+    ) / len(
+        margins.loc[
+            (user_breakpoints[0.60] >= margins) & (margins >= user_breakpoints[0.40])
+        ]
+    )
 
     distribution_data = {
         "away_team": home_away_dict["away"],
         "home_team": home_away_dict["home"],
+        "season": season.value,
         "home_win_chance_max": home_win_chance_max,
         "max_margin_top": user_breakpoints[1.00],
         "max_margin_bottom": user_breakpoints[0.00],
@@ -1219,7 +1362,8 @@ def run_simulation(matchup_df, season, sample_size, preserve_size, kenpom_tempo)
         "mild_margin_top": user_breakpoints[0.75],
         "mild_margin_bottom": user_breakpoints[0.25],
         "home_win_chance_median": home_win_chance_median,
-        "median_margin": user_breakpoints[0.50],
+        "median_margin_top": user_breakpoints[0.60],
+        "median_margin_bottom": user_breakpoints[0.40],
     }
 
     return results_array, distribution_data
