@@ -9,6 +9,9 @@ import pandas
 import numpy
 import scipy
 
+# import api stuff
+from src.api.autobracket import single_sim_bracket
+
 
 # router and templates
 autobracket_views = APIRouter(prefix="/autobracket")
@@ -39,8 +42,20 @@ async def generate(request: Request):
     )
 
 
-@autobracket_views.post("/bracket", response_class=HTMLResponse, tags=["form_post_view"])
+@autobracket_views.post("/old-bracket", response_class=HTMLResponse, tags=["form_post_view"])
 async def bracket(request: Request):
+    form = await request.form()
+    bracket_json = await single_sim_bracket("2021", form['spice_level'])
+    return templates.TemplateResponse(
+        'autobracket/bracket.html',
+        context={
+            'request': request,
+            'bracket': bracket_json,
+        }
+    )
+
+@autobracket_views.post("/old-bracket", response_class=HTMLResponse, tags=["form_post_view"])
+async def old_bracket(request: Request):
     # If you go straight to the bracket page, you'll get a 400 error!
     form = await request.form()
 

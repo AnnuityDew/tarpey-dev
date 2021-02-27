@@ -31,13 +31,13 @@ This year's iteration includes a full Monte Carlo simulation program!">
 
   <section>
     How spicy would you like your bracket?<br>
-    <input name="spice_level" type="radio" id="none" value="none" required><label for="none">None (simulation "chalk")</label><br>
+    <input name="spice_level" type="radio" id="none" value="none" required><label for="none">Vanilla (middle 20% of simulations)</label><br>
     <input name="spice_level" type="radio" id="mild" value="mild" required><label for="mild">Mild (middle 50% of simulations)</label><br>
     <input name="spice_level" type="radio" id="medium" value="medium" required><label for="medium">Medium (middle 80% of simulations)</label><br>
     <input name="spice_level" type="radio" id="max" value="max" required><label for="max">MAX SPICE (hope you like outliers!)</label><br>
   </section>
 
-  <sl-button id="make-bracket" class="pnav-button" size="large" disabled>Not ready...come back on Selection Sunday!</sl-button>
+  <button id="make-bracket" class="pnav-button">Make my bracket!</button>
 
 </form>
 {% endblock %}

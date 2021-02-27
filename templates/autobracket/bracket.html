@@ -9,48 +9,9 @@
 {% block header %}autobracket output{% endblock %}
 
 {% block content %}
-Here's the model output.
-  <table>
-      <tr>
-      <th></th>
-      <th>Model Output</th>
-      <th>Actual Results</th>
-    </tr>
+Here's your bracket!
 
-    <tbody>
-    {% for index, row in simulated_df.iterrows() %}  
-    <tr>
-      <td class="id">
-        {{ index }}
-      </td>
-      <td class="model_output">
-        {% if index == 68 %}
-          {{ row.team1 }} is the simulated champion!
-        {% elif row.team1sim > row.team2sim %}
-          {{ row.team1 }} defeats {{ row.team2 }}
-        {% else %}
-          {{ row.team2 }} defeats {{ row.team1 }}
-        {% endif %}
-      </td>
-      <td class="actualresults">
-      {% for index_actual, row in actual_df.iterrows() %}
-        {% if index_actual == index %}
-          {% if row.team1sim > row.team2sim %}
-            {{ row.team1 }} defeats {{ row.team2 }}, {{ row.team1sim|int }}-{{ row.team2sim|int }}
-          {% elif row.team2sim > row.team1sim %}
-            {{ row.team2 }} defeats {{ row.team1 }}, {{ row.team2sim|int }}-{{ row.team1sim|int }}
-          {% else %}
-            This game hasn't happened yet.
-          {% endif %}
-        {% endif %}
-      {% endfor %}
-      </td>
-    </tr>
-    {% endfor %}    
-    </tbody>
-  </table>
-
-  <form action="{{ url_for('generate') }}">
-    <button>Go back!</button>
-  </form>
+<form action="{{ url_for('generate') }}">
+  <button>Go back!</button>
+</form>
 {% endblock %}
